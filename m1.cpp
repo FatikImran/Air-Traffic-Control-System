@@ -1,3 +1,11 @@
+/*
+
+---------   MUHAMMAD FATIK BIN IMRAN (23i-0655)
+---------   MUHAMMAD KALEEM AKHTAR (23i-0524)
+-----   SECTION: BCS-4C
+
+*/
+
 #include <iostream>
 #include <vector>
 #include <string>
@@ -371,38 +379,27 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
 
 Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways) {
     // Emergency flights get priority
-    if (aircraft.isEmergency || aircraft.type == EMERGENCY) {
-        for (auto& runway : runways) {
-            if (!runway.isOccupied) {
-                return &runway;
-            }
-        }
-        return nullptr;
-    }
-    
-    // Cargo flights must use RWY-C
-    if (aircraft.type == CARGO) {
-        if (!runways[RWY_C].isOccupied) {
-            return &runways[RWY_C];
-        }
+    if (aircraft.isEmergency || aircraft.type == EMERGENCY || aircraft.type == CARGO) {
+        if (!runways[RWY_C].isOccupied)
+            return &runways[RWY_C];    
         return nullptr;
     }
     
     // Normal runway assignment based on direction
     if (aircraft.direction == NORTH || aircraft.direction == SOUTH) {
-        if (!runways[RWY_A].isOccupied) {
+        if (!runways[RWY_A].isOccupied)
             return &runways[RWY_A];
-        }
+        
     } else { // EAST or WEST
-        if (!runways[RWY_B].isOccupied) {
+        if (!runways[RWY_B].isOccupied) 
             return &runways[RWY_B];
-        }
+        
     }
     
     // If preferred runway is occupied, try overflow runway
-    if (!runways[RWY_C].isOccupied) {
+    if (!runways[RWY_C].isOccupied) 
         return &runways[RWY_C];
-    }
+    
     
     return nullptr; // No available runway
 }
