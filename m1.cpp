@@ -82,6 +82,7 @@ string getAircraftTypeName(AircraftType type);
 
 // Global mutex for thread-safe console output
 mutex coutMutex;
+bool cargoCreated = false;
 
 int main() {
     srand(time(0));
@@ -105,22 +106,34 @@ int main() {
     int aircraftSequence = 0;
 
     while (elapsedTime < SIMULATION_DURATION) {
+
+        bool aircraftCreated = false;
         // Generate new flights based on time intervals
         if (elapsedTime % 180 == 0) { // Every 3 minutes (North - International Arrivals)
             Aircraft newAircraft = createAircraft(airlines, NORTH, ++aircraftSequence);
             activeAircrafts.push_back(newAircraft);
+            aircraftCreated = true;
         }
-        if (elapsedTime % 120 == 0) { // Every 2 minutes (South - Domestic Arrivals)
-            Aircraft newAircraft = createAircraft(airlines, SOUTH, ++aircraftSequence);
-            activeAircrafts.push_back(newAircraft);
-        }
+        
         if (elapsedTime % 150 == 0) { // Every 2.5 minutes (East - International Departures)
             Aircraft newAircraft = createAircraft(airlines, EAST, ++aircraftSequence);
             activeAircrafts.push_back(newAircraft);
+            aircraftCreated = true;
         }
-        if (elapsedTime % 240 == 0) { // Every 4 minutes (West - Domestic Departures)
+        if (elapsedTime % 120 == 0 && elapsedTime != 0) { // Every 2 minutes (South - Domestic Arrivals)
+            Aircraft newAircraft = createAircraft(airlines, SOUTH, ++aircraftSequence);
+            activeAircrafts.push_back(newAircraft);
+            aircraftCreated = true;
+        }
+        if (elapsedTime % 240 == 0 && elapsedTime != 0) { // Every 4 minutes (West - Domestic Departures)
             Aircraft newAircraft = createAircraft(airlines, WEST, ++aircraftSequence);
             activeAircrafts.push_back(newAircraft);
+            aircraftCreated = true;
+        }
+
+        if (aircraftCreated)
+        {
+            displayStatus(activeAircrafts, runways, elapsedTime);
         }
 
         // Process each aircraft
@@ -137,15 +150,11 @@ int main() {
                 simulateDeparture(aircraft, runways);
             }
 
-            // Remove aircraft that have completed their cycle
-            if (aircraft.phase == AT_GATE && aircraft.direction != NORTH && aircraft.direction != SOUTH) {
-                it = activeAircrafts.erase(it);
-            } else if ((aircraft.phase == DEPARTURE_CRUISE || aircraft.isFaulty) && 
-                      (aircraft.direction == NORTH || aircraft.direction == SOUTH)) {
-                it = activeAircrafts.erase(it);
-            } else {
-                ++it;
-            }
+          
+            if (aircraft.isFaulty) 
+                it = activeAircrafts.erase(it);           
+            else 
+                ++it;            
         }
 
         // Handle random ground faults
@@ -232,28 +241,37 @@ Aircraft createAircraft(const vector<Airline>& airlines, Direction direction, in
     isEmergency = (rand() % 100) < emergencyProb;
     
     // Select airline based on type needed
-    vector<const Airline*> eligibleAirlines;
-    for (const auto& airline : airlines) {
-        if (isEmergency && (airline.type == EMERGENCY)) {
-            eligibleAirlines.push_back(&airline);
-        } else if (direction == EAST || direction == WEST) { // Departures
-            if (airline.type == COMMERCIAL || airline.type == CARGO) {
-                eligibleAirlines.push_back(&airline);
-            }
-        } else { // Arrivals
-            if (airline.type == COMMERCIAL || (airline.type == CARGO && direction == SOUTH)) {
-                eligibleAirlines.push_back(&airline);
-            }
+    vector<const Airline*> emergencyEligibleAirlines;
+    for (const auto& airline : airlines) 
+    {
+        if (isEmergency && (airline.type == EMERGENCY)) 
+            emergencyEligibleAirlines.push_back(&airline);
+        else if(!isEmergency && (airline.type != EMERGENCY)) 
+            emergencyEligibleAirlines.push_back(&airline);            
+    }
+
+    // Select airline based on type needed
+    vector<const Airline*> eligibleAirlines; 
+    if (!isEmergency)
+    {
+        for (const auto& airline : emergencyEligibleAirlines) 
+        {
+            if (cargoCreated && airline->type == CARGO)
+                continue;
+            else
+                eligibleAirlines.push_back(airline);
         }
     }
-    
+
     if (eligibleAirlines.empty()) {
         // Fallback to any airline if none match (shouldn't happen with our data)
         eligibleAirlines.push_back(&airlines[0]);
     }
     
     const Airline* selectedAirline = eligibleAirlines[rand() % eligibleAirlines.size()];
-    
+    if (selectedAirline->type == CARGO) 
+        cargoCreated = true; // Set flag to prevent further cargo creation
+   
     Aircraft aircraft;
     aircraft.flightNumber = generateFlightNumber(*selectedAirline, seq);
     aircraft.airline = const_cast<Airline*>(selectedAirline);
