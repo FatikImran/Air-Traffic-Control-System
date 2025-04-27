@@ -55,6 +55,7 @@ struct Aircraft {
     FlightPhase phase;
     double speed; // km/h
     bool isFaulty;
+    int timeInFlight = 0; // seconds
 };
 
 // Runway structure
@@ -186,6 +187,12 @@ int main() {
         this_thread::sleep_for(chrono::milliseconds(TIME_STEP * 1000));
         elapsedTime = chrono::duration_cast<chrono::seconds>(
             chrono::steady_clock::now() - startTime).count();
+
+        // Updating time in flight for each aircraft
+        for (auto& aircraft : activeAircrafts) {
+        //if (aircraft.phase != AT_GATE && aircraft.phase != AT_GATE_BRS && aircraft.phase != DEPARTURE_CRUISE_BRS)
+                aircraft.timeInFlight++;
+        }
     }
 
     cout << "\nSimulation completed. Final statistics:" << endl;
@@ -285,7 +292,7 @@ Aircraft createAircraft(const vector<Airline>& airlines, Direction direction, in
     // Set initial phase based on direction
     if (direction == NORTH || direction == SOUTH) {
         aircraft.phase = HOLDING;
-        aircraft.speed = 400 + rand() % 201; // 400-600 km/h
+        aircraft.speed = 555 + rand() % 10; // 555-565 km/h
     } else {
         aircraft.phase = AT_GATE;
         aircraft.speed = 0;
@@ -297,13 +304,13 @@ Aircraft createAircraft(const vector<Airline>& airlines, Direction direction, in
 void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
     switch (aircraft.phase) {
         case HOLDING:
-            if (rand() % 10 == 0)  // Random transition from holding to approach
+            if (aircraft.timeInFlight >= 5) // Simulate holding 
                 aircraft.phase = APPROACH;            
             break;
             
         case APPROACH: {
             Runway* assignedRunway = assignRunway(aircraft, runways);
-            if (assignedRunway != nullptr) {
+            if (assignedRunway && aircraft.timeInFlight >= 9) {
                 aircraft.phase = LANDING;
                 assignedRunway->isOccupied = true;
                 assignedRunway->currentAircraft = &aircraft;
@@ -312,12 +319,15 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         }
             
         case LANDING:
-            if (aircraft.speed <= 30) { // Simulate landing
+            if (aircraft.timeInFlight >= 14) 
+            {                   
                 aircraft.phase = TAXI;  
                 
                 // Free the runway
-                for (auto& runway : runways) {
-                    if (runway.currentAircraft == &aircraft) {
+                for (auto& runway : runways) 
+                {
+                    if (runway.currentAircraft == &aircraft) 
+                    {
                         runway.isOccupied = false;
                         runway.currentAircraft = nullptr;
                         break;
@@ -327,13 +337,13 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
             break;
             
         case TAXI:
-            if (rand() % 5 == 0) // Random transition to gate
+            if (aircraft.timeInFlight >= 17)
                 aircraft.phase = AT_GATE;
             break;
             
         case AT_GATE:
-            if (aircraft.speed == 0)
-                aircraft.phase = AT_GATE_BRS; // Mark for removal (will be removed in main after 0-10 seconds)
+            if (aircraft.timeInFlight >= 20 && aircraft.speed <= 0) // Simulate time at gate
+                aircraft.phase = AT_GATE_BRS; // Mark for removal (will be removed in main after 0-7 seconds)
             break;
             
         default:
@@ -344,7 +354,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
 void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
     switch (aircraft.phase) {
         case AT_GATE:
-            if (rand() % 5 == 0) { // Random transition from gate to taxi
+            if (aircraft.timeInFlight >= 3) { // Random transition from gate to taxi
                 aircraft.phase = TAXI;
                 //aircraft.speed = 15 + rand() % 16; // 15-30 km/h
             }
@@ -352,7 +362,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
             
         case TAXI: {
             Runway* assignedRunway = assignRunway(aircraft, runways);
-            if (assignedRunway != nullptr) {
+            if (assignedRunway && aircraft.timeInFlight >= 6) {
                 aircraft.phase = TAKEOFF_ROLL;
                // aircraft.speed = 0; // Start of takeoff roll
                 assignedRunway->isOccupied = true;
@@ -362,16 +372,14 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         }
             
         case TAKEOFF_ROLL:
-            // Simulate acceleration
-            if (aircraft.speed < 290) {
-                //aircraft.speed += 20; // Simple acceleration model
-            } else {
-                aircraft.phase = CLIMB;
-                //aircraft.speed = 250 + rand() % 214; // 250-463 km/h
-                
-                // Free the runway
-                for (auto& runway : runways) {
-                    if (runway.currentAircraft == &aircraft) {
+            if (aircraft.timeInFlight >= 12)
+            {
+                // Changing Phase & Freeing the runway
+                aircraft.phase = CLIMB;                
+                for (auto& runway : runways) 
+                {
+                    if (runway.currentAircraft == &aircraft) 
+                    {
                         runway.isOccupied = false;
                         runway.currentAircraft = nullptr;
                         break;
@@ -381,21 +389,17 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
             break;
             
         case CLIMB:
-            if (rand() % 5 == 0) { // Random transition to cruise
-                aircraft.phase = ACCELERATING_TO_CRUISE;
-                //aircraft.speed = 800 + rand() % 101; // 800-900 km/h
-            }
+            if (aircraft.timeInFlight >= 16)
+                aircraft.phase = ACCELERATING_TO_CRUISE;                     
             break;
             
         case ACCELERATING_TO_CRUISE:
-            if (aircraft.speed >= 800) 
+            if (aircraft.timeInFlight >= 23) 
                 aircraft.phase = DEPARTURE_CRUISE;
-                //aircraft.speed = 900; // Set to cruise speed
-            
             break;
         
         case DEPARTURE_CRUISE:
-            if (aircraft.speed > 900)
+            if (aircraft.timeInFlight >= 25)
                 aircraft.phase = DEPARTURE_CRUISE_BRS; // Mark for removal (will be removed in main after 0-10 seconds)            
             break;
             
@@ -437,23 +441,29 @@ int calculateSpeedChange(const Aircraft& aircraft)
     // Speed Change based on Phase:
     int speedChange;
 
-    if(aircraft.phase == HOLDING || aircraft.phase == LANDING || aircraft.phase == TAKEOFF_ROLL || aircraft.phase == CLIMB)
-        speedChange = rand() % 51;
+    if(aircraft.phase == TAKEOFF_ROLL || aircraft.phase == CLIMB)
+        speedChange = rand() % 18 + 30;
+
+    else if(aircraft.phase == LANDING)
+        speedChange = 38 + rand() % 10;
+
+    else if(aircraft.phase == HOLDING)
+        speedChange = rand() % 10 + 42;
 
     else if(aircraft.phase == TAXI)
-        speedChange = rand() % 9;
+        speedChange = rand() % 5 + 4;
 
     else if(aircraft.phase == AT_GATE)
-        speedChange = rand() % 4;
+        speedChange = rand() % 3 + 2;
 
     else if(aircraft.phase == APPROACH)
-        speedChange = rand() % 16;
+        speedChange = rand() % 5 + 11;
 
     else if (aircraft.phase == ACCELERATING_TO_CRUISE)
-        speedChange = rand() % 76;        
+        speedChange = rand() % 26 + 50;        
 
     else if(aircraft.phase == DEPARTURE_CRUISE)
-        speedChange = rand() % 101;
+        speedChange = rand() % 8 + 18;
 
     else
         speedChange = 0; 
