@@ -29,7 +29,8 @@ enum AircraftType { COMMERCIAL, CARGO, EMERGENCY };
 enum FlightPhase { 
     HOLDING, APPROACH, LANDING, TAXI, AT_GATE, 	// Arrival phases
     TAKEOFF_ROLL, CLIMB, DEPARTURE_CRUISE,      // Departure phases
-    INVALID
+    AT_GATE_BRS, DEPARTURE_CRUISE_BRS, 
+    ACCELERATING_TO_CRUISE,
 };
 enum Direction { NORTH, SOUTH, EAST, WEST };
 enum RunwayID { RWY_A, RWY_B, RWY_C };
@@ -162,12 +163,12 @@ int main() {
             handleGroundFaults(activeAircrafts);
         }
 
-        // Check for invalid aircrafts every 7 seconds:
+        // Check for aircrafts to be removed every 7 seconds:
         if (elapsedTime % 7 == 0 && elapsedTime != 0) 
         {
             for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); ) 
             {
-                if (it->phase == INVALID)
+                if (it->phase == AT_GATE_BRS || it->phase == DEPARTURE_CRUISE_BRS)
                     it = activeAircrafts.erase(it);
                 else
                     ++it;                
@@ -332,7 +333,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
             
         case AT_GATE:
             if (aircraft.speed == 0)
-                aircraft.phase = INVALID; // Mark for removal (will be removed in main after 0-10 seconds)
+                aircraft.phase = AT_GATE_BRS; // Mark for removal (will be removed in main after 0-10 seconds)
             break;
             
         default:
@@ -381,13 +382,21 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
             
         case CLIMB:
             if (rand() % 5 == 0) { // Random transition to cruise
-                aircraft.phase = DEPARTURE_CRUISE;
+                aircraft.phase = ACCELERATING_TO_CRUISE;
                 //aircraft.speed = 800 + rand() % 101; // 800-900 km/h
             }
             break;
             
+        case ACCELERATING_TO_CRUISE:
+            if (aircraft.speed >= 800) 
+                aircraft.phase = DEPARTURE_CRUISE;
+                //aircraft.speed = 900; // Set to cruise speed
+            
+            break;
+        
         case DEPARTURE_CRUISE:
-            // Aircraft remains here until removed from simulation
+            if (aircraft.speed > 900)
+                aircraft.phase = DEPARTURE_CRUISE_BRS; // Mark for removal (will be removed in main after 0-10 seconds)            
             break;
             
         default:
@@ -440,8 +449,11 @@ int calculateSpeedChange(const Aircraft& aircraft)
     else if(aircraft.phase == APPROACH)
         speedChange = rand() % 16;
 
+    else if (aircraft.phase == ACCELERATING_TO_CRUISE)
+        speedChange = rand() % 76;        
+
     else if(aircraft.phase == DEPARTURE_CRUISE)
-        speedChange = rand() % 20;
+        speedChange = rand() % 101;
 
     else
         speedChange = 0; 
@@ -493,6 +505,9 @@ void checkForViolations(Aircraft& aircraft) {
             break;
         case CLIMB:
             violation = (aircraft.speed > 463);
+            break;
+        case ACCELERATING_TO_CRUISE:
+            violation = false;
             break;
         case DEPARTURE_CRUISE:
             violation = (aircraft.speed < 800 || aircraft.speed > 900);
@@ -579,7 +594,9 @@ string getPhaseName(FlightPhase phase) {
         case TAKEOFF_ROLL: return "Takeoff Roll";
         case CLIMB: return "Climb";
         case DEPARTURE_CRUISE: return "Departure Cruise";
-        case INVALID: return "At Gate (being removed soon)";
+        case AT_GATE_BRS: return "At Gate (being removed soon)";
+        case DEPARTURE_CRUISE_BRS: return "Departure Cruise (being removed soon)";
+        case ACCELERATING_TO_CRUISE: return "Accelerating to Cruise";
         default: return "Unknown";
     }
 }
