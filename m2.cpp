@@ -93,6 +93,7 @@ priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> departureQueue;
 map<string, Aircraft*> aircraftStatusMap;
 
 // Function prototypes
+void removeAircraftFromEverywhere(Aircraft* aircraft, vector<Aircraft*>& aircrafts, vector<Runway>& runways);
 void initializeAirlines(vector<Airline>& airlines);
 void initializeRunways(vector<Runway>& runways);
 string generateFlightNumber(const Airline& airline, int sequence);
@@ -159,54 +160,37 @@ int main() {
             updateAircraftSpeed(*aircraft);
 
             // Simulate based on direction (arrival or departure)
-            if (aircraft->direction == NORTH || aircraft->direction == SOUTH) {
+            if (aircraft->direction == NORTH || aircraft->direction == SOUTH)
                 simulateArrival(*aircraft, runways);
-            }
-            else {
+            else
                 simulateDeparture(*aircraft, runways);
-            }
 
-            if (aircraft->isFaulty) {
-                // Remove from any runway queues
-                for (auto& runway : runways) {
-                    queue<Aircraft*> tempQueue;
-                    while (!runway.waitingQueue.empty()) {
-                        Aircraft* queuedAircraft = runway.waitingQueue.front();
-                        runway.waitingQueue.pop();
-                        if (queuedAircraft != aircraft) {
-                            tempQueue.push(queuedAircraft);
-                        }
-                    }
-                    runway.waitingQueue = tempQueue;
-                }
-                it = activeAircrafts.erase(it);
-                delete aircraft;
-            }
-            else {
+            if (aircraft->isFaulty)
+                removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
+            else
                 ++it;
-            }
         }
 
-        // Handle random ground faults
-        if (elapsedTime % 30 == 0) { // Check for faults every 30 seconds
+        // Handle random ground faults every 30 seconds
+        if (elapsedTime % 30 == 0)
             handleGroundFaults(activeAircrafts);
-        }
 
         // Check for aircrafts to be removed
-        if (elapsedTime % 7 == 0 && elapsedTime != 0) {
-            for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); ) {
-                if ((*it)->phase == AT_GATE_BRS || (*it)->phase == DEPARTURE_CRUISE_BRS) {
-                    it = activeAircrafts.erase(it);
-                }
-                else {
+        if (elapsedTime % 7 == 0 && elapsedTime != 0)
+        {
+            for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); )
+            {
+                if ((*it)->phase == AT_GATE_BRS || (*it)->phase == DEPARTURE_CRUISE_BRS)
+                    removeAircraftFromEverywhere(*it, activeAircrafts, runways);
+                else
                     ++it;
-                }
             }
         }
 
         // Display current status and check for violations:
         displayStatus(activeAircrafts, runways, elapsedTime);
-        for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); ++it) {
+        for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); ++it)
+        {
             Aircraft* aircraft = *it;
             checkForViolations(*aircraft);
         }
@@ -217,25 +201,25 @@ int main() {
             chrono::steady_clock::now() - startTime).count();
 
         // Updating time in flight for each aircraft
-        for (auto& aircraft : activeAircrafts) {
+        for (auto& aircraft : activeAircrafts)
             aircraft->timeInFlight++;
-        }
+
     }
 
     cout << "\nSimulation completed. Final statistics:" << endl;
-    for (const auto& airline : airlines) {
+    for (const auto& airline : airlines)
         cout << airline.name << " violations: " << airline.violations << endl;
-    }
 
     // Clean up remaining aircraft objects
-    for (auto aircraft : activeAircrafts) {
-        delete aircraft;
-    }
+    for (auto aircraft : activeAircrafts)
+        removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
 
     return 0;
+
 }
 
-void initializeAirlines(vector<Airline>& airlines) {
+void initializeAirlines(vector<Airline>& airlines)
+{
     airlines = {
         {"PIA", COMMERCIAL, 6, 4, 0},
         {"AirBlue", COMMERCIAL, 4, 4, 0},
@@ -246,7 +230,8 @@ void initializeAirlines(vector<Airline>& airlines) {
     };
 }
 
-void initializeRunways(vector<Runway>& runways) {
+void initializeRunways(vector<Runway>& runways)
+{
     runways = {
         {RWY_A, "RWY-A (North-South Arrivals)", false, nullptr},
         {RWY_B, "RWY-B (East-West Departures)", false, nullptr},
@@ -254,7 +239,8 @@ void initializeRunways(vector<Runway>& runways) {
     };
 }
 
-string generateFlightNumber(const Airline& airline, int sequence) {
+string generateFlightNumber(const Airline& airline, int sequence)
+{
     string prefix;
     if (airline.name == "PIA") prefix = "PK";
     else if (airline.name == "AirBlue") prefix = "PA";
@@ -431,6 +417,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 5) {
             aircraft.phase = APPROACH;
             aircraft.status = "Approaching";
+            aircraft.fuelStatus -= 2;
         }
         break;
 
@@ -438,7 +425,8 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         Runway* assignedRunway = assignRunway(aircraft, runways);
         if (assignedRunway && aircraft.timeInFlight >= 9) {
             aircraft.phase = LANDING;
-            aircraft.status = "Landing";           
+            aircraft.status = "Landing";
+            aircraft.fuelStatus -= 2;
         }
         break;
     }
@@ -447,6 +435,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 14) {
             aircraft.phase = TAXI;
             aircraft.status = "Taxiing";
+            aircraft.fuelStatus -= 2;
 
             // Free the runway and assign next aircraft
             for (auto& runway : runways) {
@@ -472,6 +461,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 17) {
             aircraft.phase = AT_GATE;
             aircraft.status = "At Gate";
+            aircraft.fuelStatus -= 2;
         }
         break;
 
@@ -479,6 +469,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 20 && aircraft.speed <= 0) {
             aircraft.phase = AT_GATE_BRS;
             aircraft.status = "Completed";
+            aircraft.fuelStatus -= 1;
         }
         break;
 
@@ -493,6 +484,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 3) {
             aircraft.phase = TAXI;
             aircraft.status = "Taxiing";
+            aircraft.fuelStatus -= 2;
         }
         break;
 
@@ -501,8 +493,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         if (assignedRunway && aircraft.timeInFlight >= 6) {
             aircraft.phase = TAKEOFF_ROLL;
             aircraft.status = "Taking Off";
-            assignedRunway->isOccupied = true;
-            assignedRunway->currentAircraft = &aircraft;
+            aircraft.fuelStatus -= 2;            
         }
         break;
     }
@@ -513,6 +504,8 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
             // Changing Phase & Freeing the runway
             aircraft.phase = CLIMB;
             aircraft.status = "Climbing";
+            aircraft.fuelStatus -= 2;
+
             for (auto& runway : runways)
             {
                 if (runway.currentAircraft == &aircraft)
@@ -538,6 +531,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 16) {
             aircraft.phase = ACCELERATING_TO_CRUISE;
             aircraft.status = "Accelerating";
+            aircraft.fuelStatus -= 2;
         }
         break;
 
@@ -545,6 +539,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 23) {
             aircraft.phase = DEPARTURE_CRUISE;
             aircraft.status = "Cruising";
+            aircraft.fuelStatus -= 3;
         }
         break;
 
@@ -552,6 +547,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
         if (aircraft.timeInFlight >= 25) {
             aircraft.phase = DEPARTURE_CRUISE_BRS;
             aircraft.status = "Completed";
+            aircraft.fuelStatus -= 4;
         }
         break;
 
@@ -560,81 +556,96 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
     }
 }
 
-Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways) {
-	// Check if the aircraft is already assigned to a runway
-	for (auto& runway : runways) {
-		if (runway.currentAircraft == &aircraft) {
-			return &runway;
-		}
-	}
-	// Assign runway based on aircraft type and direction
-	Runway* assignedRunway = nullptr;
+Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways) 
+{
+    // Check if the aircraft is already assigned to a runway
+    for (auto& runway : runways) {
+        if (runway.currentAircraft == &aircraft) {
+            return &runway;
+        }
+    }
+    // Check if the aircraft is in a waiting queue    
+    for (auto& runway : runways)
+    {
+        queue<Aircraft*> tempQueue = runway.waitingQueue; // Create a copy of the queue
+        while (!tempQueue.empty())
+        {
+            Aircraft* queuedAircraft = tempQueue.front();
+            tempQueue.pop();
+            if (queuedAircraft == &aircraft) // IF Aircraft is in the waiting queue            
+                return &runway;
+        }
+    }
+
+
+    // Assign runway based on aircraft type and direction
+    Runway* assignedRunway = nullptr;
     // Emergency flights get priority on any runway
-    if (aircraft.priority == EMERGENCY_PRIORITY) 
+    if (aircraft.priority == EMERGENCY_PRIORITY)
     {
         // Try RWY_C first
-		if (!runways[RWY_C].isOccupied) assignedRunway = &runways[RWY_C];
-		else if (!runways[RWY_A].isOccupied) assignedRunway = &runways[RWY_A];
-		else if (!runways[RWY_B].isOccupied) assignedRunway = &runways[RWY_B];
+        if (!runways[RWY_C].isOccupied) assignedRunway = &runways[RWY_C];
+        else if (!runways[RWY_A].isOccupied) assignedRunway = &runways[RWY_A];
+        else if (!runways[RWY_B].isOccupied) assignedRunway = &runways[RWY_B];
         else
         {
-			// If all runways are occupied, assign to the one with the least waiting time
-			assignedRunway = &runways[RWY_C];
-			for (auto& runway : runways) 
+            // If all runways are occupied, assign to the one with the least waiting time
+            assignedRunway = &runways[RWY_C];
+            for (auto& runway : runways)
             {
-				if (runway.waitingQueue.size() < assignedRunway->waitingQueue.size())
-					assignedRunway = &runway;
-			}
-			// Add the aircraft to the waiting queue
-			assignedRunway->waitingQueue.push(&aircraft);
-			aircraft.status = "Waiting for Runway";
+                if (runway.waitingQueue.size() < assignedRunway->waitingQueue.size())
+                    assignedRunway = &runway;
+            }
+            // Add the aircraft to the waiting queue
+            assignedRunway->waitingQueue.push(&aircraft);
+            aircraft.status = "Waiting for Runway";
             return nullptr;
         }
-		assignedRunway->isOccupied = true;
-		assignedRunway->currentAircraft = &aircraft;
+        assignedRunway->isOccupied = true;
+        assignedRunway->currentAircraft = &aircraft;
         return assignedRunway;
     }
 
     // Cargo flights must use RWY_C
     if (aircraft.type == CARGO) {
-		if (!runways[RWY_C].isOccupied)
+        if (!runways[RWY_C].isOccupied)
         {
-			assignedRunway = &runways[RWY_C];
-			assignedRunway->isOccupied = true;
-			assignedRunway->currentAircraft = &aircraft;
-			return assignedRunway;
-		}
-		else 
+            assignedRunway = &runways[RWY_C];
+            assignedRunway->isOccupied = true;
+            assignedRunway->currentAircraft = &aircraft;
+            return assignedRunway;
+        }
+        else
         {
-			// Add to waiting queue
-			runways[RWY_C].waitingQueue.push(&aircraft);
-			aircraft.status = "Waiting for Runway";
-			return nullptr;
-		}
+            // Add to waiting queue
+            runways[RWY_C].waitingQueue.push(&aircraft);
+            aircraft.status = "Waiting for Runway";
+            return nullptr;
+        }
     }
 
     // Arrival runway assignment (NORTH/SOUTH on RWY-A or RWY-C)
-    if (aircraft.direction == NORTH || aircraft.direction == SOUTH) 
+    if (aircraft.direction == NORTH || aircraft.direction == SOUTH)
     {
-		Runway* assignedRunway = nullptr;
-		if (!runways[RWY_A].isOccupied) assignedRunway = &runways[RWY_A];
-		else if (!runways[RWY_C].isOccupied) assignedRunway = &runways[RWY_C];
+        Runway* assignedRunway = nullptr;
+        if (!runways[RWY_A].isOccupied) assignedRunway = &runways[RWY_A];
+        else if (!runways[RWY_C].isOccupied) assignedRunway = &runways[RWY_C];
         else
         {
-			// If all runways are occupied, assign to the one with the least waiting time
-			assignedRunway = &runways[RWY_A];
-			if (runways[RWY_C].waitingQueue.size() < assignedRunway->waitingQueue.size())
-				assignedRunway = &runways[RWY_C];
-			assignedRunway->waitingQueue.push(&aircraft);
-			aircraft.status = "Waiting for Runway";
-			return nullptr;
-		}
-		assignedRunway->isOccupied = true;
-		assignedRunway->currentAircraft = &aircraft;
-		return assignedRunway;
+            // If all runways are occupied, assign to the one with the least waiting time
+            assignedRunway = &runways[RWY_A];
+            if (runways[RWY_C].waitingQueue.size() < assignedRunway->waitingQueue.size())
+                assignedRunway = &runways[RWY_C];
+            assignedRunway->waitingQueue.push(&aircraft);
+            aircraft.status = "Waiting for Runway";
+            return nullptr;
+        }
+        assignedRunway->isOccupied = true;
+        assignedRunway->currentAircraft = &aircraft;
+        return assignedRunway;
     }
     // Departure runway assignment (EAST/WEST on RWY-B or RWY-C)
-    else 
+    else
     {
         Runway* assignedRunway = nullptr;
         if (!runways[RWY_B].isOccupied) assignedRunway = &runways[RWY_B];
@@ -652,7 +663,7 @@ Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways) {
         assignedRunway->isOccupied = true;
         assignedRunway->currentAircraft = &aircraft;
         return assignedRunway;
-    }    
+    }
 }
 
 void updateWaitTimes() {
@@ -896,4 +907,62 @@ string getAircraftTypeName(AircraftType type) {
     case EMERGENCY: return "Emergency";
     default: return "Unknown";
     }
+}
+
+void removeAircraftFromEverywhere(Aircraft* aircraft, vector<Aircraft*>& aircrafts, vector<Runway>& runways)
+{
+    // Remove from active aircrafts
+    auto it = find(aircrafts.begin(), aircrafts.end(), aircraft);
+    if (it != aircrafts.end()) {
+        aircrafts.erase(it);
+    }
+    // Remove from runways
+    for (auto& runway : runways) {
+        if (runway.currentAircraft == aircraft) {
+            runway.isOccupied = false;
+            runway.currentAircraft = nullptr;
+        }
+        else {
+            queue<Aircraft*> tempQueue;
+            while (!runway.waitingQueue.empty()) {
+                Aircraft* queuedAircraft = runway.waitingQueue.front();
+                runway.waitingQueue.pop();
+                if (queuedAircraft != aircraft) {
+                    tempQueue.push(queuedAircraft);
+                }
+            }
+            runway.waitingQueue = tempQueue;
+        }
+    }
+    // Remove from status map
+    aircraftStatusMap.erase(aircraft->flightNumber);
+
+    // Remove from Arrival/Departure queues (only possible in TAXI / AT GATE phase)
+    if (aircraft->direction == NORTH || aircraft->direction == SOUTH)
+    {
+        priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempQueue;
+        while (!arrivalQueue.empty())
+        {
+            Aircraft* queuedAircraft = arrivalQueue.top();
+            arrivalQueue.pop();
+            if (queuedAircraft != aircraft)
+                tempQueue.push(queuedAircraft);
+        }
+        arrivalQueue = tempQueue;
+    }
+    else
+    {
+        priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempQueue;
+        while (!departureQueue.empty())
+        {
+            Aircraft* queuedAircraft = departureQueue.top();
+            departureQueue.pop();
+            if (queuedAircraft != aircraft)
+                tempQueue.push(queuedAircraft);
+        }
+        departureQueue = tempQueue;
+    }
+
+    // Delete the aircraft object
+    delete aircraft;
 }
