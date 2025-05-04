@@ -30,6 +30,7 @@ const int SIMULATION_DURATION = 300;        // 5 minutes in seconds
 const int TIME_STEP = 1;                   // 1 second per simulation step
 const string ADMIN_USERNAME = "admin";
 const string ADMIN_PASSWORD = "atcs2025";
+const int AGING_THRESHOLD = 30;            // Threshold for priority upgrade due to waiting
 
 // Enums
 enum AircraftType { COMMERCIAL, CARGO, EMERGENCY };
@@ -131,6 +132,8 @@ void updateWaitTimes();
 void updateAircraftStatus(Aircraft& aircraft);
 bool kbhit();
 void updateSimulationStep(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts);
+void rebuildQueue(Aircraft* aircraft, priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority>& queue);
+bool isAircraftWaiting(const Aircraft& aircraft, const vector<Runway>& runways);
 
 // Set terminal to non-blocking input mode
 void setNonBlockingInput(bool enable) {
@@ -507,7 +510,10 @@ void updateSimulationStep(vector<Airline>& airlines, vector<Runway>& runways, ve
 
     // Update time in flight for each aircraft
     for (auto& aircraft : activeAircrafts)
-        aircraft->timeInFlight++;
+    {
+        if (!isAircraftWaiting(*aircraft, runways)) // Only update if not waiting
+            aircraft->timeInFlight++;
+    }
 }
 
 bool kbhit() {
@@ -659,10 +665,20 @@ Aircraft* createAircraftForAutoEntry(const vector<Airline>& airlines, Direction 
         aircraft->phase = HOLDING;
         aircraft->speed = 555 + rand() % 10; // 555-564 km/h
         arrivalQueue.push(aircraft);
+        // Rebuild queue if priority is HIGH_PRIORITY due to low fuel
+        if (aircraft->fuelStatus < 30 && aircraft->priority == HIGH_PRIORITY) {
+            cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to low fuel.\n";
+            rebuildQueue(aircraft, arrivalQueue);
+        }
     } else {
         aircraft->phase = AT_GATE;
         aircraft->speed = 0;
         departureQueue.push(aircraft);
+        // Rebuild queue if priority is HIGH_PRIORITY due to low fuel
+        if (aircraft->fuelStatus < 30 && aircraft->priority == HIGH_PRIORITY) {
+            cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to low fuel.\n";
+            rebuildQueue(aircraft, departureQueue);
+        }
     }
 
     // Add to status map
@@ -672,6 +688,11 @@ Aircraft* createAircraftForAutoEntry(const vector<Airline>& airlines, Direction 
 }
 
 void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
+    // Skip phase transitions if aircraft is waiting for a runway
+    if (isAircraftWaiting(aircraft, runways)) {
+        return;
+    }
+
     switch (aircraft.phase) {
         case HOLDING:
             if (aircraft.timeInFlight >= 5) {
@@ -739,6 +760,11 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
 }
 
 void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
+    // Skip phase transitions if aircraft is waiting for a runway
+    if (isAircraftWaiting(aircraft, runways)) {
+        return;
+    }
+
     switch (aircraft.phase) {
         case AT_GATE:
             if (aircraft.timeInFlight >= 3) {
@@ -900,11 +926,24 @@ void updateWaitTimes() {
         Aircraft* aircraft = pair.second;
         if (aircraft->status == "Waiting for Runway") {
             aircraft->estimatedWaitTime++;
+            // Aging: Upgrade NORMAL_PRIORITY to HIGH_PRIORITY after AGING_THRESHOLD
+            if (aircraft->estimatedWaitTime >= AGING_THRESHOLD && aircraft->priority == NORMAL_PRIORITY) {
+                aircraft->priority = HIGH_PRIORITY;
+                cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to aging.\n";
+                // Rebuild queue
+                priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority>& queue = (aircraft->direction == NORTH || aircraft->direction == SOUTH) ? arrivalQueue : departureQueue;
+                rebuildQueue(aircraft, queue);
+            }
         }
     }
 }
 
 void updateAircraftStatus(Aircraft& aircraft) {
+    // Skip status update if aircraft is waiting for a runway
+    if (aircraft.status == "Waiting for Runway") {
+        return;
+    }
+
     switch (aircraft.phase) {
         case HOLDING: aircraft.status = "Holding Pattern"; break;
         case APPROACH: aircraft.status = "Approaching"; break;
@@ -945,6 +984,18 @@ int calculateSpeedChange(const Aircraft& aircraft) {
 }
 
 void updateAircraftSpeed(Aircraft& aircraft) {
+    // If aircraft is waiting for a runway, set fixed speed and skip updates
+    if (aircraft.status == "Waiting for Runway") {
+        if (aircraft.direction == NORTH || aircraft.direction == SOUTH) {
+            // Arrivals: Maintain APPROACH speed (240-290 km/h)
+            aircraft.speed = 240 + rand() % 51; // Random speed in 240-290 km/h
+        } else {
+            // Departures: Set speed to 0 (stationary while waiting)
+            aircraft.speed = 0;
+        }
+        return;
+    }
+
     int speedChange = calculateSpeedChange(aircraft);
     if (aircraft.direction == NORTH || aircraft.direction == SOUTH)
         aircraft.speed -= speedChange;
@@ -1160,4 +1211,38 @@ void removeAircraftFromEverywhere(Aircraft* aircraft, vector<Aircraft*>& aircraf
     }
 
     delete aircraft;
+}
+
+void rebuildQueue(Aircraft* aircraft, priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority>& queue) {
+    vector<Aircraft*> temp;
+    bool found = false;
+    while (!queue.empty()) {
+        Aircraft* a = queue.top();
+        queue.pop();
+        if (a == aircraft) {
+            found = true;
+        } else {
+            temp.push_back(a);
+        }
+    }
+    if (found) {
+        for (auto a : temp) {
+            queue.push(a);
+        }
+        queue.push(aircraft);
+    }
+}
+
+bool isAircraftWaiting(const Aircraft& aircraft, const vector<Runway>& runways) {
+    for (const auto& runway : runways) {
+        queue<Aircraft*> tempQueue = runway.waitingQueue;
+        while (!tempQueue.empty()) {
+            Aircraft* queuedAircraft = tempQueue.front();
+            tempQueue.pop();
+            if (queuedAircraft == &aircraft) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
