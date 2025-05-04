@@ -31,6 +31,7 @@ const int TIME_STEP = 1;                   // 1 second per simulation step
 const string ADMIN_USERNAME = "admin";
 const string ADMIN_PASSWORD = "atcs2025";
 const int AGING_THRESHOLD = 30;            // Threshold for priority upgrade due to waiting
+const int AVG_RUNWAY_USAGE_TIME = 5;       // Average time (seconds) for runway usage (landing/takeoff)
 
 // Enums
 enum AircraftType { COMMERCIAL, CARGO, EMERGENCY };
@@ -68,6 +69,7 @@ struct Aircraft {
     int fuelStatus; // percentage
     Priority priority;
     time_t scheduledTime;
+    int actualWaitTime = 0;
     int estimatedWaitTime = 0;
     string status = "Waiting";
 };
@@ -128,12 +130,14 @@ Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways);
 string getPhaseName(FlightPhase phase);
 string getDirectionName(Direction dir);
 string getAircraftTypeName(AircraftType type);
-void updateWaitTimes();
+void updateWaitTimes(vector<Runway>& runways);
 void updateAircraftStatus(Aircraft& aircraft);
 bool kbhit();
 void updateSimulationStep(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts);
 void rebuildQueue(Aircraft* aircraft, priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority>& queue);
 bool isAircraftWaiting(const Aircraft& aircraft, const vector<Runway>& runways);
+int calculateEstimatedWaitTime(Aircraft& aircraft, const vector<Runway>& runways);
+void displayAVNStatistics(const vector<Airline>& airlines);
 
 // Set terminal to non-blocking input mode
 void setNonBlockingInput(bool enable) {
@@ -204,6 +208,8 @@ int main() {
                     simulationPaused = true;
                     globalElapsedTime = 0;
                     cout << "Simulation terminated.\n";
+                    // Display AVN statistics before cleanup
+                    displayAVNStatistics(airlines);
                     // Clean up
                     for (auto aircraft : activeAircrafts)
                         removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
@@ -245,6 +251,8 @@ int main() {
                     lock_guard<mutex> guard(simulationMutex);
                     simulationRunning = false;
                     simulationPaused = true;
+                    // Display AVN statistics before cleanup
+                    displayAVNStatistics(airlines);
                     for (auto aircraft : activeAircrafts)
                         removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
                 }
@@ -421,9 +429,8 @@ void runSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Ai
     if (simulationRunning) {
         simulationRunning = false;
         simulationPaused = true;
-        cout << "\nSimulation completed. Final statistics:" << endl;
-        for (const auto& airline : airlines)
-            cout << airline.name << " violations: " << airline.violations << endl;
+        cout << "\nSimulation completed.\n";
+        displayAVNStatistics(airlines);
     }
 }
 
@@ -465,7 +472,7 @@ void showSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<A
 }
 
 void updateSimulationStep(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts) {
-    updateWaitTimes();
+    updateWaitTimes(runways);
 
     // Process each aircraft
     for (auto it = activeAircrafts.begin(); it != activeAircrafts.end(); ) {
@@ -509,8 +516,7 @@ void updateSimulationStep(vector<Airline>& airlines, vector<Runway>& runways, ve
     }
 
     // Update time in flight for each aircraft
-    for (auto& aircraft : activeAircrafts)
-    {
+    for (auto& aircraft : activeAircrafts) {
         if (!isAircraftWaiting(*aircraft, runways)) // Only update if not waiting
             aircraft->timeInFlight++;
     }
@@ -921,13 +927,14 @@ Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways) {
     }
 }
 
-void updateWaitTimes() {
+void updateWaitTimes(vector<Runway>& runways) {
     for (auto& pair : aircraftStatusMap) {
         Aircraft* aircraft = pair.second;
+        // Update actual wait time for aircraft in waiting queue
         if (aircraft->status == "Waiting for Runway") {
-            aircraft->estimatedWaitTime++;
+            aircraft->actualWaitTime++;
             // Aging: Upgrade NORMAL_PRIORITY to HIGH_PRIORITY after AGING_THRESHOLD
-            if (aircraft->estimatedWaitTime >= AGING_THRESHOLD && aircraft->priority == NORMAL_PRIORITY) {
+            if (aircraft->actualWaitTime >= AGING_THRESHOLD && aircraft->priority == NORMAL_PRIORITY) {
                 aircraft->priority = HIGH_PRIORITY;
                 cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to aging.\n";
                 // Rebuild queue
@@ -935,7 +942,116 @@ void updateWaitTimes() {
                 rebuildQueue(aircraft, queue);
             }
         }
+        // Calculate estimated wait time for all aircraft
+        aircraft->estimatedWaitTime = calculateEstimatedWaitTime(*aircraft, runways);
     }
+}
+
+int calculateEstimatedWaitTime(Aircraft& aircraft, const vector<Runway>& runways) {
+    // If aircraft is past runway phases, no wait time
+    if ((aircraft.direction == NORTH || aircraft.direction == SOUTH) &&
+        (aircraft.phase == LANDING || aircraft.phase == TAXI || aircraft.phase == AT_GATE || aircraft.phase == AT_GATE_BRS)) {
+        return 0;
+    }
+    if ((aircraft.direction == EAST || aircraft.direction == WEST) &&
+        (aircraft.phase == TAKEOFF_ROLL || aircraft.phase == CLIMB || aircraft.phase == ACCELERATING_TO_CRUISE ||
+         aircraft.phase == DEPARTURE_CRUISE || aircraft.phase == DEPARTURE_CRUISE_BRS)) {
+        return 0;
+    }
+
+    int estimatedWait = 0;
+
+    // Check if aircraft is in a waiting queue
+    if (isAircraftWaiting(aircraft, runways)) {
+        // Find the runway and queue position
+        for (const auto& runway : runways) {
+            queue<Aircraft*> tempQueue = runway.waitingQueue;
+            int position = 0;
+            bool found = false;
+            vector<Aircraft*> higherOrEqualPriority;
+
+            // Collect aircraft in queue
+            while (!tempQueue.empty()) {
+                Aircraft* queuedAircraft = tempQueue.front();
+                tempQueue.pop();
+                if (queuedAircraft == &aircraft) {
+                    found = true;
+                }
+                if (queuedAircraft->priority <= aircraft.priority) { // Higher or equal priority
+                    higherOrEqualPriority.push_back(queuedAircraft);
+                }
+            }
+
+            if (found) {
+                // Sort by scheduled time for FCFS within priority
+                sort(higherOrEqualPriority.begin(), higherOrEqualPriority.end(),
+                     [](Aircraft* a, Aircraft* b) { return a->scheduledTime < b->scheduledTime; });
+
+                // Find position of current aircraft
+                for (size_t i = 0; i < higherOrEqualPriority.size(); ++i) {
+                    if (higherOrEqualPriority[i] == &aircraft) {
+                        position = i;
+                        break;
+                    }
+                }
+
+                // Calculate wait time: position * average runway usage + current aircraft time
+                estimatedWait = position * AVG_RUNWAY_USAGE_TIME;
+                if (runway.isOccupied && runway.currentAircraft) {
+                    // Add remaining time for current aircraft (approximate as full runway usage)
+                    estimatedWait += AVG_RUNWAY_USAGE_TIME;
+                }
+                break;
+            }
+        }
+    } else {
+        // Estimate time to reach runway-requiring phase
+        if (aircraft.direction == NORTH || aircraft.direction == SOUTH) {
+            // Arrivals
+            if (aircraft.phase == HOLDING) {
+                estimatedWait = 9; // 5s (HOLDING) + 4s (APPROACH to runway)
+            } else if (aircraft.phase == APPROACH) {
+                estimatedWait = 4; // 4s (APPROACH to runway)
+            }
+        } else {
+            // Departures
+            if (aircraft.phase == AT_GATE) {
+                estimatedWait = 6; // 3s (AT_GATE) + 3s (TAXI to runway)
+            } else if (aircraft.phase == TAXI) {
+                estimatedWait = 3; // 3s (TAXI to runway)
+            }
+        }
+
+        // Add potential queue wait time
+        priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> queueCopy =
+            (aircraft.direction == NORTH || aircraft.direction == SOUTH) ? arrivalQueue : departureQueue;
+        int aheadCount = 0;
+
+        // Count aircraft with higher or equal priority
+        while (!queueCopy.empty()) {
+            Aircraft* queuedAircraft = queueCopy.top();
+            queueCopy.pop();
+            if (queuedAircraft != &aircraft && queuedAircraft->priority <= aircraft.priority) {
+                aheadCount++;
+            }
+        }
+
+        // Add queue wait time
+        estimatedWait += aheadCount * AVG_RUNWAY_USAGE_TIME;
+
+        // Add time for currently occupying aircraft
+        for (const auto& runway : runways) {
+            if (runway.isOccupied && runway.currentAircraft &&
+                ((aircraft.direction == NORTH || aircraft.direction == SOUTH) &&
+                 (runway.id == RWY_A || runway.id == RWY_C)) ||
+                ((aircraft.direction == EAST || aircraft.direction == WEST) &&
+                 (runway.id == RWY_B || runway.id == RWY_C))) {
+                estimatedWait += AVG_RUNWAY_USAGE_TIME;
+            }
+        }
+    }
+
+    return estimatedWait;
 }
 
 void updateAircraftStatus(Aircraft& aircraft) {
@@ -1119,14 +1235,61 @@ void displayStatus(const vector<Aircraft*>& aircrafts, const vector<Runway>& run
             case NORMAL_PRIORITY: cout << "Normal"; break;
         }
 
+        // Display estimated wait time for all aircraft
+        cout << ", Est. Wait: " << aircraft->estimatedWaitTime << "s";
+
+        // Display actual wait time for aircraft in waiting queue
         if (aircraft->status == "Waiting for Runway") {
-            cout << ", Wait Time: " << aircraft->estimatedWaitTime << "s";
+            cout << ", Actual Wait: " << aircraft->actualWaitTime << "s";
         }
 
         cout << (aircraft->hasAVN ? " [AVN ISSUED]" : "") << endl;
     }
 
-    cout << "==================================" << endl << flush;
+    cout << setfill(' ') << "==================================" << endl << flush;
+}
+
+void displayAVNStatistics(const vector<Airline>& airlines) {
+    lock_guard<mutex> guard(coutMutex);
+    
+    // Column widths
+    const int nameWidth = 25;
+    const int typeWidth = 12;
+    const int violationsWidth = 12;
+
+    // Calculate total violations
+    int totalViolations = 0;
+    for (const auto& airline : airlines) {
+        totalViolations += airline.violations;
+    }
+
+    // Header
+    cout << setfill(' ') << "\n=============================\n";
+    cout << "| AirControlX AVN Statistics |\n";
+    cout << "=============================\n";
+
+    // Table header
+    cout << "| " << left << setw(nameWidth) << "Airline Name" 
+         << "| " << left << setw(typeWidth) << "Type" 
+         << "| " << right << setw(violationsWidth) << "Violations" << " |\n";
+    cout << "+-" << string(nameWidth, '-') << "-+-" 
+         << string(typeWidth, '-') << "-+-" 
+         << string(violationsWidth, '-') << "-+\n";
+
+    // Table rows
+    for (const auto& airline : airlines) {
+        cout << "| " << left << setw(nameWidth) << airline.name 
+             << "| " << left << setw(typeWidth) << getAircraftTypeName(airline.type) 
+             << "| " << right << setw(violationsWidth) << airline.violations << " |\n";
+    }
+
+    // Table footer
+    cout << "+-" << string(nameWidth, '-') << "-+-" 
+         << string(typeWidth, '-') << "-+-" 
+         << string(violationsWidth, '-') << "-+\n";
+    cout << "| Total Violations: " << left << setw(nameWidth + typeWidth - 16) << totalViolations 
+         << "| " << right << setw(violationsWidth) << " " << " |\n";
+    cout << "=============================\n\n" << flush;
 }
 
 string getPhaseName(FlightPhase phase) {
