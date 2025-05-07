@@ -22,6 +22,8 @@
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <regex>
+#include <limits>
 
 using namespace std;
 
@@ -105,6 +107,63 @@ bool simulationPaused = true; // Start paused until shown
 thread simulationThread;
 int globalElapsedTime = 0; // Track simulation time globally
 
+// Input validation helper functions
+// Clear input buffer to prevent residual input issues
+void clearInputBuffer() {
+    cin.clear();
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+}
+
+// Validate if string is a valid integer within range
+bool isValidInteger(const string& str, int& value, int min, int max) {
+    try {
+        size_t pos;
+        value = stoi(str, &pos);
+        if (pos != str.length()) return false; // Ensure entire string is consumed
+        return value >= min && value <= max;
+    } catch (...) {
+        return false;
+    }
+}
+
+// Validate time format (YYYY-MM-DD HH:MM) and ranges
+bool isValidTimeFormat(const string& timeStr, struct tm& tm) {
+    // Check format with regex
+    regex timeRegex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
+    if (!regex_match(timeStr, timeRegex)) {
+        return false;
+    }
+
+    // Parse time
+    istringstream ss(timeStr);
+    ss >> get_time(&tm, "%Y-%m-%d %H:%M");
+    if (ss.fail()) {
+        return false;
+    }
+
+    // Validate ranges
+    if (tm.tm_year < 125) { // Year >= 2025 (tm_year is years since 1900)
+        return false;
+    }
+    if (tm.tm_mon < 0 || tm.tm_mon > 11) { // Months 0-11
+        return false;
+    }
+    if (tm.tm_hour < 0 || tm.tm_hour > 23) {
+        return false;
+    }
+    if (tm.tm_min < 0 || tm.tm_min > 59) {
+        return false;
+    }
+
+    // Validate day of month
+    int daysInMonth[] = {31, (tm.tm_year % 4 == 0 && tm.tm_year % 100 != 0) || (tm.tm_year % 400 == 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (tm.tm_mday < 1 || tm.tm_mday > daysInMonth[tm.tm_mon]) {
+        return false;
+    }
+
+    return true;
+}
+
 // Function prototypes
 void displayWelcomeScreen();
 bool login();
@@ -183,9 +242,17 @@ int main() {
         setNonBlockingInput(false);
         displayMenu();
         int choice;
-        cout << "Enter your choice: ";
-        cin >> choice;
-        cin.ignore(); // Clear newline
+        string input;
+        // Validate menu choice
+        while (true) {
+            cout << "Enter your choice: ";
+            getline(cin, input);
+            if (isValidInteger(input, choice, 1, 6)) {
+                break;
+            }
+            cout << "Invalid input. Please enter a number between 1 and 6. Press Enter to continue...\n";
+            clearInputBuffer();
+        }
 
         switch (choice) {
             case 1: // Start Simulation
@@ -294,10 +361,27 @@ bool login() {
 
     while (attempts > 0) {
         cout << "\n=== AirControlX Login ===\n";
-        cout << "Username: ";
-        getline(cin, username);
-        cout << "Password: ";
-        getline(cin, password);
+        // Validate username
+        while (true) {
+            cout << "Username: ";
+            getline(cin, username);
+            if (!username.empty() && username.length() <= 50) {
+                break;
+            }
+            cout << "Invalid username. Must be non-empty and less than 50 characters. Press Enter to continue...\n";
+            clearInputBuffer();
+        }
+
+        // Validate password
+        while (true) {
+            cout << "Password: ";
+            getline(cin, password);
+            if (!password.empty() && password.length() <= 50) {
+                break;
+            }
+            cout << "Invalid password. Must be non-empty and less than 50 characters. Press Enter to continue...\n";
+            clearInputBuffer();
+        }
 
         if (username == ADMIN_USERNAME && password == ADMIN_PASSWORD) {
             cout << "Login successful!\n" << endl;
@@ -331,14 +415,16 @@ void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
 
     // Get airline choice
     int airlineChoice;
+	string input;
     Airline* selectedAirline = nullptr;
     bool validAirline = false;
     while (!validAirline) {
         cout << "Select airline (1-" << airlines.size() << "): ";
-        cin >> airlineChoice;
-        cin.ignore();
-        if (airlineChoice < 1 || airlineChoice > static_cast<int>(airlines.size())) {
-            cout << "Invalid airline selection. Please try again.\n";
+        getline(cin, input);
+
+        if (!isValidInteger(input, airlineChoice, 1, airlines.size())) {
+            cout << "Invalid airline selection. Please try again. Press Enter to continue...\n";
+			clearInputBuffer();
             continue;
         }
         selectedAirline = &airlines[airlineChoice - 1];
@@ -351,52 +437,89 @@ void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
 
     // Get flight number
     string flightNumber;
-    cout << "Enter flight number (e.g., PK101): ";
-    getline(cin, flightNumber);
+    while (true) {
+        cout << "Enter flight number (e.g., PK101): ";
+        getline(cin, flightNumber);
+        if (flightNumber.empty() || flightNumber.length() > 10) {
+            cout << "Invalid flight number. Must be non-empty and less than 10 characters. Press Enter to continue...\n";
+            clearInputBuffer();
+            continue;
+        }
+        // Check if flight number is unique
+        bool isUnique = true;
+        for (const auto* aircraft : activeAircrafts) {
+            if (aircraft->flightNumber == flightNumber) {
+                isUnique = false;
+                break;
+            }
+        }
+        if (!isUnique) {
+            cout << "Error: Flight number " << flightNumber << " is already in use. Please enter a unique flight number. Press Enter to continue...\n";
+            clearInputBuffer();
+            continue;
+        }
+        break;
+    }
 
     // Get direction
-    cout << "Select direction (1. North, 2. South, 3. East, 4. West): ";
     int dirChoice;
-    cin >> dirChoice;
-    cin.ignore();
+    while (true) {
+        cout << "Select direction (1. North, 2. South, 3. East, 4. West): ";
+        getline(cin, input);
+        if (isValidInteger(input, dirChoice, 1, 4)) {
+            break;
+        }
+        cout << "Invalid input. Please enter a number between 1 and 4. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
     Direction direction;
     switch (dirChoice) {
         case 1: direction = NORTH; break;
         case 2: direction = SOUTH; break;
         case 3: direction = EAST; break;
         case 4: direction = WEST; break;
-        default:
-            cout << "Invalid direction.\n";
-            return;
     }
 
     // Get priority
-    cout << "Select priority (1. Emergency, 2. High, 3. Normal): ";
     int priChoice;
-    cin >> priChoice;
-    cin.ignore();
+    while (true) {
+        cout << "Select priority (1. Emergency, 2. High, 3. Normal): ";
+        getline(cin, input);
+        if (isValidInteger(input, priChoice, 1, 3)) {
+            break;
+        }
+        cout << "Invalid input. Please enter a number between 1 and 3. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
     Priority priority;
     switch (priChoice) {
         case 1: priority = EMERGENCY_PRIORITY; break;
         case 2: priority = HIGH_PRIORITY; break;
         case 3: priority = NORMAL_PRIORITY; break;
-        default:
-            cout << "Invalid priority.\n";
-            return;
     }
 
     // Get scheduled time
     string schedTimeStr;
-    cout << "Enter scheduled time (YYYY-MM-DD HH:MM): ";
-    getline(cin, schedTimeStr);
     struct tm tm = {};
-    istringstream ss(schedTimeStr);
-    ss >> get_time(&tm, "%Y-%m-%d %H:%M");
-    if (ss.fail()) {
-        cout << "Invalid time format.\n";
-        return;
+    time_t scheduledTime;
+    while (true) {
+        cout << "Enter scheduled time (YYYY-MM-DD HH:MM) or 'now' for current time: ";
+        getline(cin, schedTimeStr);
+        // Check for NOW (case-insensitive)
+        string lowerInput = schedTimeStr;
+        transform(lowerInput.begin(), lowerInput.end(), lowerInput.begin(), ::tolower);
+        if (lowerInput == "now") {
+            scheduledTime = time(nullptr);
+            break;
+        }
+        // Validate time format
+        if (isValidTimeFormat(schedTimeStr, tm)) {
+            scheduledTime = mktime(&tm);
+            break;
+        }
+        cout << "Invalid input. Use YYYY-MM-DD HH:MM with valid ranges (e.g., year >= 2025, hours 0-23) or 'now'.\nPress Enter to continue...\n";
+        clearInputBuffer();
     }
-    time_t scheduledTime = mktime(&tm);
 
     // Create aircraft
     Aircraft* newAircraft = createAircraftForManualEntry(airlines, direction, ++aircraftSequence, flightNumber, selectedAirline->type, priority, scheduledTime);
@@ -750,7 +873,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
                             runway.waitingQueue.pop();
                             runway.currentAircraft = nextAircraft;
                             runway.isOccupied = true;
-                            nextAircraft->status = "No Longer Waiting for Runway";
+                            nextAircraft->status = "Approaching Runway";
                         }
                         break;
                     }
@@ -822,7 +945,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
                             runway.waitingQueue.pop();
                             runway.currentAircraft = nextAircraft;
                             runway.isOccupied = true;
-                            nextAircraft->status = "No Longer Waiting for Runway";
+                            nextAircraft->status = "Taking Off";
                         }
                         break;
                     }
