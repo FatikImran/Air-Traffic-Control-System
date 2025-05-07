@@ -34,6 +34,10 @@ const string ADMIN_USERNAME = "admin";
 const string ADMIN_PASSWORD = "atcs2025";
 const int AGING_THRESHOLD = 30;            // Threshold for priority upgrade due to waiting
 const int AVG_RUNWAY_USAGE_TIME = 5;       // Average time (seconds) for runway usage (landing/takeoff)
+const double COMMERCIAL_FINE = 500000.0;   // PKR for commercial violations
+const double CARGO_FINE = 700000.0;        // PKR for cargo violations
+const double SERVICE_FEE = 0.15;           // 15% administrative fee
+const int DUE_DAYS = 3;                    // Due date is 3 days from issuance
 
 // Enums
 enum AircraftType { COMMERCIAL, CARGO, EMERGENCY };
@@ -46,6 +50,22 @@ enum FlightPhase {
 enum Direction { NORTH, SOUTH, EAST, WEST };
 enum RunwayID { RWY_A, RWY_B, RWY_C };
 enum Priority { EMERGENCY_PRIORITY, HIGH_PRIORITY, NORMAL_PRIORITY };
+
+// AVN structure
+struct AVN {
+    string avnID;              // e.g., AVN-20250507-001
+    string flightNumber;
+    string airlineName;
+    AircraftType aircraftType;
+    double speedRecorded;       // km/h
+    string speedPermissible;    // e.g., "240-290"
+    double altitudeRecorded;    // ft
+    string altitudePermissible; // e.g., "3000-10250"
+    time_t issueTime;
+    double fineAmount;         // PKR, including service fee
+    string paymentStatus;      // "unpaid" or "paid"
+    time_t dueDate;
+};
 
 // Airline structure
 struct Airline {
@@ -107,6 +127,8 @@ bool simulationRunning = false;
 bool simulationPaused = true; // Start paused until shown
 thread simulationThread;
 int globalElapsedTime = 0; // Track simulation time globally
+vector<AVN> avnList;       // Store all AVNs
+static int avnSequence = 0; // For generating AVN IDs
 
 // Input validation helper functions
 // Clear input buffer to prevent residual input issues
@@ -186,6 +208,8 @@ void updateAircraftSpeed(Aircraft& aircraft);
 void updateAircraftAltitude(Aircraft& aircraft);
 double calculateAltitudeChange(const Aircraft& aircraft);
 void checkForViolations(Aircraft& aircraft);
+void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation);
+void updateAVNPaymentStatus(const string& avnID);
 void displayStatus(const vector<Aircraft*>& aircrafts, const vector<Runway>& runways, int elapsedTime);
 void handleGroundFaults(vector<Aircraft*>& aircrafts);
 Runway* assignRunway(Aircraft& aircraft, vector<Runway>& runways);
@@ -287,6 +311,8 @@ int main() {
                     airlines.clear();
                     runways.clear();
                     aircraftStatusMap.clear();
+                    avnList.clear();
+                    avnSequence = 0;
                 } else {
                     cout << "No simulation is running!\n";
                 }
@@ -1333,6 +1359,105 @@ void updateAircraftAltitude(Aircraft& aircraft)
     if (aircraft.altitude < 0) aircraft.altitude = aircraft.status == "LANDING" ? 100 + rand() % 11 : 0;
 }
 
+void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation) {
+    AVN avn;
+    time_t now = time(nullptr);
+    struct tm* tm = localtime(&now);
+    char dateStr[11];
+    strftime(dateStr, sizeof(dateStr), "%Y%m%d", tm);
+    avn.avnID = "AVN-" + string(dateStr) + "-" + to_string(++avnSequence);
+    avn.flightNumber = aircraft.flightNumber;
+    avn.airlineName = aircraft.airline->name;
+    avn.aircraftType = aircraft.type;
+    avn.speedRecorded = aircraft.speed;
+    avn.altitudeRecorded = aircraft.altitude;
+    avn.issueTime = now;
+    avn.paymentStatus = "unpaid";
+    avn.dueDate = now + DUE_DAYS * 24 * 60 * 60;
+    double baseFine = (aircraft.type == CARGO) ? CARGO_FINE : COMMERCIAL_FINE;
+    avn.fineAmount = baseFine * (1.0 + SERVICE_FEE);
+    switch (aircraft.phase) {
+        case HOLDING:
+            avn.speedPermissible = "≤600";
+            avn.altitudePermissible = "9000-20000";
+            break;
+        case APPROACH:
+            avn.speedPermissible = "240-290";
+            avn.altitudePermissible = "3000-10250";
+            break;
+        case LANDING:
+            avn.speedPermissible = "≤240";
+            avn.altitudePermissible = "0-3100";
+            break;
+        case TAXI:
+            avn.speedPermissible = "≤30";
+            avn.altitudePermissible = "0";
+            break;
+        case AT_GATE:
+            avn.speedPermissible = "≤10";
+            avn.altitudePermissible = "0";
+            break;
+        case TAKEOFF_ROLL:
+            avn.speedPermissible = "≤290";
+            avn.altitudePermissible = "0-1000";
+            break;
+        case CLIMB:
+            avn.speedPermissible = "≤463";
+            avn.altitudePermissible = "900-20000";
+            break;
+        case ACCELERATING_TO_CRUISE:
+            avn.speedPermissible = "N/A";
+            avn.altitudePermissible = "N/A";
+            break;
+        case DEPARTURE_CRUISE:
+            avn.speedPermissible = "800-900";
+            avn.altitudePermissible = "29000-40000";
+            break;
+        default:
+            avn.speedPermissible = "N/A";
+            avn.altitudePermissible = "N/A";
+            break;
+    }
+    avnList.push_back(avn);
+    lock_guard<mutex> guard(coutMutex);
+    cout << "AVN GENERATED: ID=" << avn.avnID
+         << ", Flight=" << avn.flightNumber
+         << ", Airline=" << avn.airlineName
+         << ", Type=" << getAircraftTypeName(avn.aircraftType)
+         << ", Phase=" << getPhaseName(aircraft.phase);
+    if (speedViolation) {
+        cout << ", Speed=" << avn.speedRecorded << " km/h (Permissible: " << avn.speedPermissible << ")";
+    }
+    if (altitudeViolation) {
+        cout << ", Altitude=" << avn.altitudeRecorded << " ft (Permissible: " << avn.altitudePermissible << ")";
+    }
+    char timeStr[20];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M", localtime(&avn.issueTime));
+    cout << ", Issued=" << timeStr;
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M", localtime(&avn.dueDate));
+    cout << ", Due=" << timeStr
+         << ", Fine=PKR " << fixed << setprecision(2) << avn.fineAmount
+         << ", Status=" << avn.paymentStatus << endl;
+    cout << "AVN forwarded to Airline Portal and StripePay.\n";
+}
+
+void updateAVNPaymentStatus(const string& avnID) {
+    lock_guard<mutex> guard(coutMutex);
+    for (auto& avn : avnList) {
+        if (avn.avnID == avnID) {
+            avn.paymentStatus = "paid";
+            cout << "PAYMENT CONFIRMED: AVN ID=" << avnID
+                 << ", Flight=" << avn.flightNumber
+                 << ", Airline=" << avn.airlineName
+                 << ", Fine=PKR " << fixed << setprecision(2) << avn.fineAmount
+                 << ", Status=paid\n";
+            cout << "Notified ATC Controller and Airline Portal.\n";
+            return;
+        }
+    }
+    cout << "ERROR: AVN ID=" << avnID << " not found for payment update.\n";
+}
+
 void checkForViolations(Aircraft& aircraft) {
     bool speedViolation = false;
     bool altitudeViolation = false;
@@ -1382,42 +1507,7 @@ void checkForViolations(Aircraft& aircraft) {
     if ((speedViolation || altitudeViolation) && !aircraft.hasAVN) {
         aircraft.hasAVN = true;
         aircraft.airline->violations++;
-
-        lock_guard<mutex> guard(coutMutex);
-        cout << "VIOLATION: " << aircraft.flightNumber << " (" << aircraft.airline->name << ") in "
-             << getPhaseName(aircraft.phase) << " phase - ";
-        if (speedViolation) {
-            cout << "Speed: " << aircraft.speed << " km/h (limits: ";
-            switch (aircraft.phase) {
-                case HOLDING: cout << "≤600"; break;
-                case APPROACH: cout << "240-290"; break;
-                case LANDING: cout << "≤240"; break;
-                case TAXI: cout << "≤30"; break;
-                case AT_GATE: cout << "≤10"; break;
-                case TAKEOFF_ROLL: cout << "≤290"; break;
-                case CLIMB: cout << "≤463"; break;
-                case DEPARTURE_CRUISE: cout << "800-900"; break;           
-                default: cout << "N/A"; break;
-            }
-            cout << " km/h)";
-        }
-        if (speedViolation && altitudeViolation) cout << ", ";
-        if (altitudeViolation) {
-            cout << "Altitude: " << aircraft.altitude << " ft (limits: ";
-            switch (aircraft.phase) {
-                case HOLDING: cout << "9000-20000"; break;
-                case APPROACH: cout << "3000-10250"; break;
-                case LANDING: cout << "0-3100"; break;
-                case TAXI: cout << "0"; break;
-                case AT_GATE: cout << "0"; break;
-                case TAKEOFF_ROLL: cout << "0-1000"; break;
-                case CLIMB: cout << "900-20000"; break;                
-                case DEPARTURE_CRUISE: cout << "29000-40000"; break;                
-                default: cout << "N/A"; break;
-            }
-            cout << " ft)";
-        }
-        cout << endl;
+        generateAVN(aircraft, speedViolation, altitudeViolation);
     }
 }
 
@@ -1509,11 +1599,17 @@ void displayAVNStatistics(const vector<Airline>& airlines) {
 
     // Calculate total violations
     int totalViolations = 0;
+    double totalFines = 0.0;
+    int unpaidCount = 0;
     for (const auto& airline : airlines) {
         totalViolations += airline.violations;
     }
-
-    // Header
+    for (const auto& avn : avnList) {
+        totalFines += avn.fineAmount;
+        if (avn.paymentStatus == "unpaid") {
+            unpaidCount++;
+        }
+    }
     cout << setfill(' ') << "\n=============================\n";
     cout << "| AirControlX AVN Statistics |\n";
     cout << "=============================\n";
@@ -1539,7 +1635,28 @@ void displayAVNStatistics(const vector<Airline>& airlines) {
          << string(violationsWidth, '-') << "-+\n";
     cout << "| Total Violations: " << left << setw(nameWidth + typeWidth - 16) << totalViolations 
          << "| " << right << setw(violationsWidth) << " " << " |\n";
-    cout << "=============================\n\n" << flush;
+    cout << "| Total Fines: PKR " << fixed << setprecision(2) << totalFines
+         << setw(nameWidth + typeWidth - 14) << " |" << setw(violationsWidth) << " " << " |\n";
+    cout << "| Unpaid AVNs: " << unpaidCount
+         << setw(nameWidth + typeWidth - 12) << " |" << setw(violationsWidth) << " " << " |\n";
+    cout << "=============================\n";
+    if (!avnList.empty()) {
+        cout << "\nDetailed AVN List:\n";
+        for (const auto& avn : avnList) {
+            cout << "AVN ID: " << avn.avnID
+                 << ", Flight: " << avn.flightNumber
+                 << ", Airline: " << avn.airlineName
+                 << ", Type: " << getAircraftTypeName(avn.aircraftType)
+                 << ", Fine: PKR " << fixed << setprecision(2) << avn.fineAmount
+                 << ", Status: " << avn.paymentStatus;
+            char timeStr[20];
+            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M", localtime(&avn.issueTime));
+            cout << ", Issued: " << timeStr;
+            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M", localtime(&avn.dueDate));
+            cout << ", Due: " << timeStr << endl;
+        }
+    }
+    cout << "\n" << flush;
 }
 
 string getPhaseName(FlightPhase phase) {
