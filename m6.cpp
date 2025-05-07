@@ -341,14 +341,14 @@ void displayWelcomeScreen() {
     cout << R"(
     ╔══════════════════════════════════════════════════════╗
     ║                                                      ║
-    ║        █████╗ ██╗  ██╗ ███████╗     █████╗ ████████╗ ██████╗ ███████╗    ║
-    ║       ██╔══██╗██║ ██╔╝ ██╔════╝    ██╔══██╗╚══██╔══╝██╔════╝ ██╔════╝     ║
-    ║      ███████║█████╔╝   █████╗      ███████║   ██║   ██║       ███████╗    ║
-    ║      ██╔══██║██╔═██╗   ██╔══╝      ██╔══██║   ██║   ██║   ██║╚════██║     ║
-    ║      ██║  ██║██║  ██╗  ██║         ██║  ██║   ██║   ╚██████╔╝███████║    ║
-    ║      ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═╝       ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝      ║
+    ║       █████╗ ██╗  ██╗ ███████╗     █████╗ ████████╗ ██████╗ ███████╗    
+    ║      ██╔══██╗██║ ██╔╝ ██╔════╝    ██╔══██╗╚══██╔══╝██╔════╝ ██╔════╝     
+    ║      ███████║█████╔╝  █████╗      ███████║   ██║   ██║      ███████╗    
+    ║      ██╔══██║██╔═██╗  ██╔══╝      ██╔══██║   ██║   ██║       ╚════██║     
+    ║      ██║  ██║██║  ██╗ ██║         ██║  ██║   ██║   ╚██████╔  ███████║    
+    ║      ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═╝         ╚═╝  ╚═╝   ╚═╝    ╚═════╝  ╚══════╝    
     ║                                                      ║
-    ║           Automated Air Traffic Control System        ║
+    ║           Automated Air Traffic Control System       ║
     ║           Developed by: Muhammad Fatik & Kaleem      ║
     ║                                                      ║
     ╚══════════════════════════════════════════════════════╝
@@ -813,7 +813,7 @@ Aircraft* createAircraftForAutoEntry(const vector<Airline>& airlines, Direction 
     if (direction == NORTH || direction == SOUTH) {
         aircraft->phase = HOLDING;
         aircraft->speed = 555 + rand() % 10; // 555-564 km/h
-        aircraft->altitude = 10000 + (rand() % 10001); // 10,000-20,000 ft
+        aircraft->altitude = 19000 + (rand() % 1000); // 19,000-20,000 ft
         arrivalQueue.push(aircraft);
         // Rebuild queue if priority is HIGH_PRIORITY due to low fuel
         if (aircraft->fuelStatus < 30 && aircraft->priority == HIGH_PRIORITY) {
@@ -1271,9 +1271,8 @@ double calculateAltitudeChange(const Aircraft& aircraft) {
         case ACCELERATING_TO_CRUISE:
             altitudeChange = 1400 + rand() % 25; 
             break;
-        case DEPARTURE_CRUISE:
-        case DEPARTURE_CRUISE_BRS:
-            altitudeChange = 3000 + rand() % 2000;
+        case DEPARTURE_CRUISE:        
+            altitudeChange = 3000 + rand() % 1000;
             break;
         default:
             altitudeChange = 0;
@@ -1310,7 +1309,8 @@ void updateAircraftSpeed(Aircraft& aircraft) {
     }
 }
 
-void updateAircraftAltitude(Aircraft& aircraft) {
+void updateAircraftAltitude(Aircraft& aircraft) 
+{
     // If aircraft is waiting for a runway, set fixed or constrained altitude and skip updates
     if (aircraft.status == "Waiting for Runway") {
         if (aircraft.direction == NORTH || aircraft.direction == SOUTH) {
@@ -1326,47 +1326,11 @@ void updateAircraftAltitude(Aircraft& aircraft) {
 
     double altitudeChange = calculateAltitudeChange(aircraft);
     if (aircraft.direction == NORTH || aircraft.direction == SOUTH)
-        aircraft.altitude += altitudeChange; // Negative for descent
+        aircraft.altitude -= altitudeChange; 
     else
-        aircraft.altitude += altitudeChange; // Positive for climb
+        aircraft.altitude += altitudeChange; 
 
-    // Enforce phase-specific altitude ranges
-    switch (aircraft.phase) {
-        case HOLDING:
-            aircraft.altitude = max(10000.0, min(20000.0, aircraft.altitude));
-            break;
-        case APPROACH:
-            aircraft.altitude = max(3000.0, min(10000.0, aircraft.altitude));
-            break;
-        case LANDING:
-            aircraft.altitude = max(0.0, min(3000.0, aircraft.altitude));
-            break;
-        case TAXI:
-        case AT_GATE:
-        case AT_GATE_BRS:
-            aircraft.altitude = 0;
-            break;
-        case TAKEOFF_ROLL:
-            aircraft.altitude = max(0.0, min(1000.0, aircraft.altitude));
-            break;
-        case CLIMB:
-            aircraft.altitude = max(1000.0, min(20000.0, aircraft.altitude));
-            break;
-        case ACCELERATING_TO_CRUISE:
-            aircraft.altitude = max(20000.0, min(30000.0, aircraft.altitude));
-            break;
-        case DEPARTURE_CRUISE:
-        case DEPARTURE_CRUISE_BRS:
-            aircraft.altitude = max(30000.0, min(40000.0, aircraft.altitude));
-            break;
-        default:
-            break;
-    }
-
-    // Ensure altitude is non-negative
-    if (aircraft.altitude < 0) {
-        aircraft.altitude = 0;
-    }
+    if (aircraft.altitude < 0) aircraft.altitude = aircraft.status == "LANDING" ? 100 + rand() % 11 : 0;
 }
 
 void checkForViolations(Aircraft& aircraft) {
@@ -1377,15 +1341,15 @@ void checkForViolations(Aircraft& aircraft) {
     switch (aircraft.phase) {
         case HOLDING:
             speedViolation = (aircraft.speed > 600);
-            altitudeViolation = (aircraft.altitude < 10000 || aircraft.altitude > 20000);
+            altitudeViolation = (aircraft.altitude < 9000 || aircraft.altitude > 20000);
             break;
         case APPROACH:
             speedViolation = (aircraft.speed < 240 || aircraft.speed > 290);
-            altitudeViolation = (aircraft.altitude < 3000 || aircraft.altitude > 10000);
+            altitudeViolation = (aircraft.altitude < 3000 || aircraft.altitude > 10250);
             break;
         case LANDING:
             speedViolation = (aircraft.speed > 240);
-            altitudeViolation = (aircraft.altitude > 3000);
+            altitudeViolation = (aircraft.altitude > 3100);
             break;
         case TAXI:
             speedViolation = (aircraft.speed > 30);
@@ -1401,7 +1365,7 @@ void checkForViolations(Aircraft& aircraft) {
             break;
         case CLIMB:
             speedViolation = (aircraft.speed > 463);
-            altitudeViolation = (aircraft.altitude < 1000 || aircraft.altitude > 20000);
+            altitudeViolation = (aircraft.altitude < 900 || aircraft.altitude > 20000);
             break;
         case ACCELERATING_TO_CRUISE:
             speedViolation = false;
@@ -1409,7 +1373,7 @@ void checkForViolations(Aircraft& aircraft) {
             break;
         case DEPARTURE_CRUISE:
             speedViolation = (aircraft.speed < 800 || aircraft.speed > 900);
-            altitudeViolation = (aircraft.altitude < 30000 || aircraft.altitude > 40000);
+            altitudeViolation = (aircraft.altitude < 29000 || aircraft.altitude > 40000);
             break;
         default:
             break;
@@ -1432,9 +1396,7 @@ void checkForViolations(Aircraft& aircraft) {
                 case AT_GATE: cout << "≤10"; break;
                 case TAKEOFF_ROLL: cout << "≤290"; break;
                 case CLIMB: cout << "≤463"; break;
-                case DEPARTURE_CRUISE: cout << "800-900"; break;
-                case AT_GATE_BRS: cout << "≤10"; break;
-                case DEPARTURE_CRUISE_BRS: cout << "800-900"; break;
+                case DEPARTURE_CRUISE: cout << "800-900"; break;           
                 default: cout << "N/A"; break;
             }
             cout << " km/h)";
@@ -1443,17 +1405,14 @@ void checkForViolations(Aircraft& aircraft) {
         if (altitudeViolation) {
             cout << "Altitude: " << aircraft.altitude << " ft (limits: ";
             switch (aircraft.phase) {
-                case HOLDING: cout << "10000-20000"; break;
-                case APPROACH: cout << "3000-10000"; break;
-                case LANDING: cout << "0-3000"; break;
+                case HOLDING: cout << "9000-20000"; break;
+                case APPROACH: cout << "3000-10250"; break;
+                case LANDING: cout << "0-3100"; break;
                 case TAXI: cout << "0"; break;
                 case AT_GATE: cout << "0"; break;
                 case TAKEOFF_ROLL: cout << "0-1000"; break;
-                case CLIMB: cout << "1000-20000"; break;
-                case ACCELERATING_TO_CRUISE: cout << "20000-30000"; break;
-                case DEPARTURE_CRUISE: cout << "30000-40000"; break;
-                case AT_GATE_BRS: cout << "0"; break;
-                case DEPARTURE_CRUISE_BRS: cout << "30000-40000"; break;
+                case CLIMB: cout << "900-20000"; break;                
+                case DEPARTURE_CRUISE: cout << "29000-40000"; break;                
                 default: cout << "N/A"; break;
             }
             cout << " ft)";
