@@ -331,14 +331,23 @@ void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
 
     // Get airline choice
     int airlineChoice;
-    cout << "Select airline (1-" << airlines.size() << "): ";
-    cin >> airlineChoice;
-    cin.ignore();
-    if (airlineChoice < 1 || airlineChoice > static_cast<int>(airlines.size())) {
-        cout << "Invalid airline selection.\n";
-        return;
+    Airline* selectedAirline = nullptr;
+    bool validAirline = false;
+    while (!validAirline) {
+        cout << "Select airline (1-" << airlines.size() << "): ";
+        cin >> airlineChoice;
+        cin.ignore();
+        if (airlineChoice < 1 || airlineChoice > static_cast<int>(airlines.size())) {
+            cout << "Invalid airline selection. Please try again.\n";
+            continue;
+        }
+        selectedAirline = &airlines[airlineChoice - 1];
+        if (selectedAirline->type == CARGO && cargoCreated) {
+            cout << "Error: Only one cargo flight is allowed per simulation. Please select a different airline.\n";
+        } else {
+            validAirline = true;
+        }
     }
-    Airline* selectedAirline = &airlines[airlineChoice - 1];
 
     // Get flight number
     string flightNumber;
@@ -392,6 +401,11 @@ void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
     // Create aircraft
     Aircraft* newAircraft = createAircraftForManualEntry(airlines, direction, ++aircraftSequence, flightNumber, selectedAirline->type, priority, scheduledTime);
     activeAircrafts.push_back(newAircraft);
+
+    // Update cargoCreated if a cargo aircraft was spawned
+    if (selectedAirline->type == CARGO) {
+        cargoCreated = true;
+    }
 
     cout << "Flight " << flightNumber << " spawned successfully.\n";
 }
@@ -736,7 +750,7 @@ void simulateArrival(Aircraft& aircraft, vector<Runway>& runways) {
                             runway.waitingQueue.pop();
                             runway.currentAircraft = nextAircraft;
                             runway.isOccupied = true;
-                            nextAircraft->status = "Approaching Runway";
+                            nextAircraft->status = "No Longer Waiting for Runway";
                         }
                         break;
                     }
@@ -796,6 +810,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
                 aircraft.status = "Climbing";
                 aircraft.fuelStatus -= 2;
 
+                // ISSUE
                 for (auto& runway : runways) {
                     if (runway.currentAircraft == &aircraft) {
                         runway.isOccupied = false;
@@ -807,7 +822,7 @@ void simulateDeparture(Aircraft& aircraft, vector<Runway>& runways) {
                             runway.waitingQueue.pop();
                             runway.currentAircraft = nextAircraft;
                             runway.isOccupied = true;
-                            nextAircraft->status = "Taking Off";
+                            nextAircraft->status = "No Longer Waiting for Runway";
                         }
                         break;
                     }
