@@ -4,6 +4,19 @@
 ---------   MUHAMMAD KALEEM AKHTAR (23i-0524)
 -----   SECTION: BCS-4C
 
+
+STEP 1: Download SFML:
+    sudo apt-get update
+    sudo apt-get install libsfml-dev
+    pkg-config --modversion sfml-graphics
+        sudo apt install pkgconf
+    
+STEP 2: COMPILE:
+    g++ -std=c++17 m6.cpp -o m6 -lsfml-graphics -lsfml-window -lsfml-system -pthread
+
+STEP 3: RUN:
+    ./main
+
 */
 
 // I/O Libraries:
