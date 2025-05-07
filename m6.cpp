@@ -24,6 +24,9 @@
 #include <fcntl.h>
 #include <regex>
 #include <limits>
+#include <cmath>
+
+#include <SFML/Graphics.hpp>
 
 using namespace std;
 
@@ -999,6 +1002,108 @@ void runSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Ai
     }
 }
 
+// New visualization function
+void visualizeSimulation(sf::RenderWindow& window, const vector<Aircraft*>& aircrafts, const vector<Runway>& runways, int elapsedTime) {
+    window.clear(sf::Color::Black);
+
+    // Font for text
+    sf::Font font;
+    if (!font.loadFromFile("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")) {
+        cout << "Error: Could not load font\n";
+        return;
+    }
+
+    // Draw runways
+    vector<sf::RectangleShape> runwayShapes(3);
+    for (size_t i = 0; i < runways.size(); ++i) {
+        runwayShapes[i].setSize(sf::Vector2f(400, 30));
+        runwayShapes[i].setPosition(50, 50 + i * 100);
+        runwayShapes[i].setFillColor(runways[i].isOccupied ? sf::Color::Red : sf::Color::Green);
+
+        // Runway label
+        sf::Text label(runways[i].name, font, 14);
+        label.setPosition(10, 50 + i * 100);
+        label.setFillColor(sf::Color::White);
+        window.draw(label);
+
+        // Waiting queue count
+        sf::Text queueText("Waiting: " + to_string(runways[i].waitingQueue.size()), font, 14);
+        queueText.setPosition(460, 50 + i * 100);
+        queueText.setFillColor(sf::Color::White);
+        window.draw(queueText);
+
+        window.draw(runwayShapes[i]);
+    }
+
+    // Draw aircraft
+    for (const auto& aircraft : aircrafts) {
+        if (aircraft->isFaulty) continue;
+
+        sf::RectangleShape aircraftShape(sf::Vector2f(20, 20));
+        // Color by priority
+        switch (aircraft->priority) {
+            case EMERGENCY_PRIORITY: aircraftShape.setFillColor(sf::Color::Red); break;
+            case HIGH_PRIORITY: aircraftShape.setFillColor(sf::Color::Yellow); break;
+            case NORMAL_PRIORITY: aircraftShape.setFillColor(sf::Color::Blue); break;
+        }
+
+        // Position based on phase and runway
+        float x = 50, y = 0;
+        if (aircraft->phase == HOLDING || aircraft->phase == APPROACH) {
+            // Circular holding pattern (simplified)
+            float angle = aircraft->timeInFlight * 0.1f;
+            x = 600 + cos(angle) * 50;
+            y = 100 + sin(angle) * 50;
+        } else if (aircraft->phase == LANDING || aircraft->phase == TAXI) {
+            // On runway A or C for arrivals
+            for (size_t i = 0; i < runways.size(); ++i) {
+                if (runways[i].currentAircraft == aircraft && (runways[i].id == RWY_A || runways[i].id == RWY_C)) {
+                    x = 50 + (aircraft->timeInFlight % 10) * 40;
+                    y = 50 + i * 100 + 5;
+                    break;
+                }
+            }
+        } else if (aircraft->phase == TAKEOFF_ROLL || aircraft->phase == CLIMB) {
+            // On runway B or C for departures
+            for (size_t i = 0; i < runways.size(); ++i) {
+                if (runways[i].currentAircraft == aircraft && (runways[i].id == RWY_B || runways[i].id == RWY_C)) {
+                    x = 50 + (aircraft->timeInFlight % 10) * 40;
+                    y = 50 + i * 100 + 5;
+                    break;
+                }
+            }
+        } else if (aircraft->phase == AT_GATE || aircraft->phase == AT_GATE_BRS) {
+            x = 50 + (rand() % 100); // Random gate position
+            y = 350;
+        } else {
+            x = 600; // Off-screen for cruising
+            y = 100;
+        }
+
+        aircraftShape.setPosition(x, y);
+        window.draw(aircraftShape);
+
+        // Aircraft status text
+        string statusText = aircraft->flightNumber + ": " + aircraft->status + " (Fuel: " +
+                            to_string(aircraft->fuelStatus) + "%, Alt: " + to_string((int)aircraft->altitude) + "m)";
+        sf::Text aircraftText(statusText, font, 12);
+        aircraftText.setPosition(x, y + 25);
+        aircraftText.setFillColor(sf::Color::White);
+        window.draw(aircraftText);
+    }
+
+    // Status panel
+    int minutes = elapsedTime / 60;
+    int seconds = elapsedTime % 60;
+    string timeText = "Time: " + to_string(minutes) + ":" + (seconds < 10 ? "0" : "") + to_string(seconds);
+    sf::Text statusText(timeText + "\nArrivals: " + to_string(arrivalQueue.size()) +
+                        "\nDepartures: " + to_string(departureQueue.size()), font, 14);
+    statusText.setPosition(10, 400);
+    statusText.setFillColor(sf::Color::White);
+    window.draw(statusText);
+
+    window.display();
+}
 void showSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts, int& aircraftSequence) {
     setNonBlockingInput(true);
     {
@@ -1006,20 +1111,41 @@ void showSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<A
         cout << "Showing simulation. Press 'q' to return to menu.\n" << flush;
     }
 
+    // Create SFML window
+    sf::RenderWindow window(sf::VideoMode(800, 600), "AirControlX Simulation");
+    window.setFramerateLimit(60);
+
     auto startTime = chrono::steady_clock::now();
-    while (simulationRunning && globalElapsedTime < SIMULATION_DURATION) {
+    while (simulationRunning && globalElapsedTime < SIMULATION_DURATION && window.isOpen()) {
+        // Handle SFML events
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed || (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Q)) {
+                window.close();
+            }
+        }
+
         {
             lock_guard<mutex> guard(simulationMutex);
             if (kbhit()) {
                 cout << "Returning to menu.\n" << flush;
                 simulationPaused = true;
+                window.close();
                 break;
             }
             simulationPaused = false;
-            displayStatus(activeAircrafts, runways, globalElapsedTime);
+
+            // Update simulation
             updateSimulationStep(airlines, runways, activeAircrafts);
             globalElapsedTime += TIME_STEP;
+
+            // Terminal output
+            displayStatus(activeAircrafts, runways, globalElapsedTime);
+
+            // SFML visualization
+            visualizeSimulation(window, activeAircrafts, runways, globalElapsedTime);
         }
+
         this_thread::sleep_for(chrono::milliseconds(TIME_STEP * 1000));
 
         // Timeout after 30 seconds to prevent freezing
@@ -1029,6 +1155,7 @@ void showSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<A
             cout << "Timeout: Returning to menu.\n" << flush;
             lock_guard<mutex> guard2(simulationMutex);
             simulationPaused = true;
+            window.close();
             break;
         }
     }
