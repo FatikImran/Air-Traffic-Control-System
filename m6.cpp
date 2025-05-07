@@ -62,8 +62,8 @@ struct AVN {
     double altitudeRecorded;    // ft
     string altitudePermissible; // e.g., "3000-10250"
     time_t issueTime;
-    double fineAmount;         // PKR, including service fee
-    string paymentStatus;      // "unpaid" or "paid"
+    int fineAmount;         // PKR, including service fee
+    string paymentStatus;      // "unpaid", "overdue", or "paid"
     time_t dueDate;
 };
 
@@ -119,6 +119,7 @@ struct ComparePriority {
 // Global variables
 mutex coutMutex;
 mutex simulationMutex;
+mutex avnListMutex; // New mutex for avnList
 bool cargoCreated = false;
 priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> arrivalQueue;
 priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> departureQueue;
@@ -196,6 +197,13 @@ void spawnRandomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
 void startSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts, int& aircraftSequence);
 void runSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts, int& aircraftSequence);
 void showSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Aircraft*>& activeAircrafts, int& aircraftSequence);
+void accessAirlinePortal();
+bool airlineLogin(string& airlineName);
+void displayAirlineMenu();
+void viewAllAVNs(const string& airlineName);
+void viewSpecificAVN(const string& airlineName);
+void initiatePayment(const string& airlineName);
+void mockStripePay(const AVN& avn);
 void removeAircraftFromEverywhere(Aircraft* aircraft, vector<Aircraft*>& aircrafts, vector<Runway>& runways);
 void initializeAirlines(vector<Airline>& airlines);
 void initializeRunways(vector<Runway>& runways);
@@ -246,6 +254,54 @@ void setNonBlockingInput(bool enable) {
     }
 }
 
+// New cleanup function to safely terminate simulation
+void cleanupSimulation(vector<Aircraft*>& activeAircrafts, vector<Runway>& runways) {
+    lock_guard<mutex> guard(simulationMutex);
+    simulationRunning = false;
+    simulationPaused = true;
+    globalElapsedTime = 0;
+
+    // Wait for simulation thread to finish
+    if (simulationThread.joinable()) {
+        simulationThread.join();
+    }
+
+    // Collect all aircraft to delete
+    vector<Aircraft*> aircraftToDelete = activeAircrafts;
+
+    // Clear runway references
+    for (auto& runway : runways) {
+        runway.isOccupied = false;
+        runway.currentAircraft = nullptr;
+        while (!runway.waitingQueue.empty()) {
+            runway.waitingQueue.pop();
+        }
+    }
+
+    // Clear priority queues
+    while (!arrivalQueue.empty()) {
+        arrivalQueue.pop();
+    }
+    while (!departureQueue.empty()) {
+        departureQueue.pop();
+    }
+
+    // Clear active aircrafts and status map
+    activeAircrafts.clear();
+    aircraftStatusMap.clear();
+
+    // Delete aircraft objects
+    for (auto aircraft : aircraftToDelete) {
+        delete aircraft;
+    }
+
+    // Reset AVN sequence and clear AVN list
+    avnSequence = 0;
+    avnList.clear();
+    cargoCreated = false;
+}
+
+
 int main() {
     srand(time(0));
 
@@ -274,10 +330,10 @@ int main() {
         while (true) {
             cout << "Enter your choice: ";
             getline(cin, input);
-            if (isValidInteger(input, choice, 1, 6)) {
+            if (isValidInteger(input, choice, 1, 7)) { // Updated to 7 options
                 break;
             }
-            cout << "Invalid input. Please enter a number between 1 and 6. Press Enter to continue...\n";
+            cout << "Invalid input. Please enter a number between 1 and 7. Press Enter to continue...\n";
             clearInputBuffer();
         }
 
@@ -297,22 +353,11 @@ int main() {
                 break;
             case 2: // End Simulation
                 if (simulationRunning) {
-                    lock_guard<mutex> guard(simulationMutex);
-                    simulationRunning = false;
-                    simulationPaused = true;
-                    globalElapsedTime = 0;
-                    cout << "Simulation terminated.\n";
-                    // Display AVN statistics before cleanup
                     displayAVNStatistics(airlines);
-                    // Clean up
-                    for (auto aircraft : activeAircrafts)
-                        removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
-                    activeAircrafts.clear();
+                    cleanupSimulation(activeAircrafts, runways);
                     airlines.clear();
                     runways.clear();
-                    aircraftStatusMap.clear();
-                    avnList.clear();
-                    avnSequence = 0;
+                    cout << "Simulation terminated.\n";
                 } else {
                     cout << "No simulation is running!\n";
                 }
@@ -344,16 +389,18 @@ int main() {
                 break;
             case 6: // Exit
                 if (simulationRunning) {
-                    lock_guard<mutex> guard(simulationMutex);
-                    simulationRunning = false;
-                    simulationPaused = true;
-                    // Display AVN statistics before cleanup
                     displayAVNStatistics(airlines);
-                    for (auto aircraft : activeAircrafts)
-                        removeAircraftFromEverywhere(aircraft, activeAircrafts, runways);
+                    cleanupSimulation(activeAircrafts, runways);
                 }
                 cout << "Exiting AirControlX. Goodbye!\n";
                 return 0;
+			case 7: // Access Airline Portal
+        	{
+	            lock_guard<mutex> guard(simulationMutex);
+	            simulationPaused = true;
+	            accessAirlinePortal();
+       		}
+        	break;
             default:
                 cout << "Invalid choice. Please try again.\n";
         }
@@ -389,6 +436,7 @@ bool login() {
     string username, password;
 
     while (attempts > 0) {
+        lock_guard<mutex> guard(coutMutex);
         cout << "\n=== AirControlX Login ===\n";
         // Validate username
         while (true) {
@@ -424,6 +472,7 @@ bool login() {
 }
 
 void displayMenu() {
+    lock_guard<mutex> guard(coutMutex);
     cout << "\n=== AirControlX Main Menu ===\n";
     cout << "1. Start Simulation\n";
     cout << "2. End Simulation\n";
@@ -431,9 +480,357 @@ void displayMenu() {
     cout << "4. Spawn Random Aircraft\n";
     cout << "5. Show Simulation\n";
     cout << "6. Exit\n";
+    cout << "7. Access Airline Portal\n";
+}
+
+void accessAirlinePortal() 
+{
+    string airlineName;
+    if (airlineLogin(airlineName)) 
+    {
+        while (true) 
+        {
+            displayAirlineMenu();
+            int choice;
+            string input;
+            //lock_guard<mutex> guard(coutMutex);
+            while (true) 
+            {
+                cout << "Enter your choice: ";
+                getline(cin, input);
+                if (isValidInteger(input, choice, 1, 4)) {
+                    break;
+                }
+                cout << "Invalid input. Please enter a number between 1 and 4. Press Enter to continue...\n";
+                clearInputBuffer();
+            }
+
+            switch (choice) 
+            {
+                case 1: // View All AVNs
+                    viewAllAVNs(airlineName);
+                    break;
+                case 2: // View Specific AVN
+                    viewSpecificAVN(airlineName);
+                    break;
+                case 3: // Initiate Payment
+                    initiatePayment(airlineName);
+                    break;
+                case 4: // Logout
+                    {lock_guard<mutex> guard(coutMutex);
+                    cout << "Logged out from Airline Portal.\n";}
+                    return;
+                default:
+                    {lock_guard<mutex> guard(coutMutex);
+                    cout << "Invalid choice. Please try again.\n";}
+            }
+        }
+    }
+}
+
+bool airlineLogin(string& airlineName) {
+    lock_guard<mutex> guard(coutMutex);
+    cout << "\n=== Airline Portal Login ===\n";
+
+    int attempts = 3;
+    string flightNumber, avnID;
+
+    while (attempts > 0) {
+        // Get flight number
+        while (true) {
+            cout << "Enter Flight Number (e.g., PK101): ";
+            getline(cin, flightNumber);
+            if (!flightNumber.empty() && flightNumber.length() <= 10) {
+                break;
+            }
+            cout << "Invalid flight number. Must be non-empty and less than 10 characters. Press Enter to continue...\n";
+            clearInputBuffer();
+        }
+
+        // Get AVN ID
+        while (true) {
+            cout << "Enter AVN ID (e.g., AVN-20250507-001): ";
+            getline(cin, avnID);
+            regex avnRegex("AVN-\\d{8}-\\d{3}");
+            if (regex_match(avnID, avnRegex)) {
+                break;
+            }
+            cout << "Invalid AVN ID format. Use AVN-YYYYMMDD-NNN. Press Enter to continue...\n";
+            clearInputBuffer();
+        }
+
+        // Validate credentials
+        lock_guard<mutex> avnGuard(avnListMutex);
+        for (const auto& avn : avnList) {
+            if (avn.flightNumber == flightNumber && avn.avnID == avnID) {
+                airlineName = avn.airlineName;
+                cout << "Login successful for " << airlineName << "!\n";
+                return true;
+            }
+        }
+
+        attempts--;
+        cout << "Invalid credentials. " << attempts << " attempts remaining.\n";
+    }
+
+    cout << "Too many failed attempts. Returning to main menu...\n";
+    return false;
+}
+
+void displayAirlineMenu() {
+    lock_guard<mutex> guard(coutMutex);
+    cout << "\n=== Airline Portal Menu ===\n";
+    cout << "1. View All AVNs\n";
+    cout << "2. View Specific AVN\n";
+    cout << "3. Initiate Payment\n";
+    cout << "4. Logout\n";
+}
+
+void viewAllAVNs(const string& airlineName) {
+    // lock_guard<mutex> guard(coutMutex);
+    // lock_guard<mutex> avnGuard(avnListMutex);
+
+    cout << "\n=== AVNs for " << airlineName << " ===\n";
+
+    // Column widths
+    const int idWidth = 15;
+    const int flightWidth = 12;
+    const int typeWidth = 12;
+    const int speedWidth = 15;
+    const int altWidth = 15;
+    const int fineWidth = 15;
+    const int statusWidth = 10;
+    const int timeWidth = 20;
+
+    // Table header
+    cout << "| " << left << setw(idWidth) << "AVN ID"
+        << "| " << left << setw(flightWidth) << "Flight No"
+        << "| " << left << setw(typeWidth) << "Type"
+        << "| " << right << setw(speedWidth) << "Speed (km/h)"
+        << "| " << right << setw(altWidth) << "Altitude (ft)"
+        << "| " << right << setw(fineWidth) << "Fine (PKR)"
+        << "| " << left << setw(statusWidth) << "Status"
+        << "| " << left << setw(timeWidth) << "Issue Time"
+        << "| " << left << setw(timeWidth) << "Due Time" << " |\n";
+    cout << "+-" << string(idWidth, '-') << "-+-"
+        << string(flightWidth, '-') << "-+-"
+        << string(typeWidth, '-') << "-+-"
+        << string(speedWidth, '-') << "-+-"
+        << string(altWidth, '-') << "-+-"
+        << string(fineWidth, '-') << "-+-"
+        << string(statusWidth, '-') << "-+-"
+        << string(timeWidth, '-') << "-+-"
+        << string(timeWidth, '-') << "-+\n";
+
+    // Table rows
+    bool hasAVNs = false;
+    time_t now = time(nullptr);
+    for (const auto& avn : avnList) {
+        if (avn.airlineName == airlineName) {
+            hasAVNs = true;
+            string status = avn.paymentStatus;
+            if (status == "unpaid" && difftime(now, avn.dueDate) > 0) {
+                status = "overdue";
+            }
+            char issueTimeStr[20];
+            strftime(issueTimeStr, sizeof(issueTimeStr), "%Y-%m-%d %H:%M", localtime(&avn.issueTime));
+            char dueTimeStr[20];
+            strftime(dueTimeStr, sizeof(dueTimeStr), "%Y-%m-%d %H:%M", localtime(&avn.dueDate));
+            cout << "| " << left << setw(idWidth) << avn.avnID
+                << "| " << left << setw(flightWidth) << avn.flightNumber
+                << "| " << left << setw(typeWidth) << getAircraftTypeName(avn.aircraftType)
+                << "| " << right << setw(speedWidth) << fixed << setprecision(2) << avn.speedRecorded << " (" << avn.speedPermissible << ")"
+                << "| " << right << setw(altWidth) << fixed << setprecision(2) << avn.altitudeRecorded << " (" << avn.altitudePermissible << ")"
+                << "| " << right << setw(fineWidth) << fixed << setprecision(2) << avn.fineAmount
+                << "| " << left << setw(statusWidth) << status
+                << "| " << left << setw(timeWidth) << issueTimeStr
+                << "| " << left << setw(timeWidth) << dueTimeStr << " |\n";
+        }
+    }
+
+    // Table footer
+    cout << "+-" << string(idWidth, '-') << "-+-"
+        << string(flightWidth, '-') << "-+-"
+        << string(typeWidth, '-') << "-+-"
+        << string(speedWidth, '-') << "-+-"
+        << string(altWidth, '-') << "-+-"
+        << string(fineWidth, '-') << "-+-"
+        << string(statusWidth, '-') << "-+-"
+        << string(timeWidth, '-') << "-+-"
+        << string(timeWidth, '-') << "-+\n";
+
+    if (!hasAVNs) {
+        cout << "No AVNs found for " << airlineName << ".\n";
+    }
+    cout << "Press Enter to continue...";
+    clearInputBuffer();
+    cin.get();
+}
+
+void viewSpecificAVN(const string& airlineName) {
+    //lock_guard<mutex> guard(coutMutex);
+    string avnID;
+    cout << "\n=== View Specific AVN ===\n";
+    while (true) {
+        cout << "Enter AVN ID (e.g., AVN-20250507-001): ";
+        getline(cin, avnID);
+        regex avnRegex("AVN-\\d{8}-\\d{3}");
+        if (regex_match(avnID, avnRegex)) {
+            break;
+        }
+        cout << "Invalid AVN ID format. Use AVN-YYYYMMDD-NNN. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
+
+    //lock_guard<mutex> avnGuard(avnListMutex);
+    bool found = false;
+    time_t now = time(nullptr);
+    for (const auto& avn : avnList) {
+        if (avn.airlineName == airlineName && avn.avnID == avnID) {
+            found = true;
+            string status = avn.paymentStatus;
+            if (status == "unpaid" && difftime(now, avn.dueDate) > 0) {
+                status = "overdue";
+            }
+            char issueTimeStr[20];
+            strftime(issueTimeStr, sizeof(issueTimeStr), "%Y-%m-%d %H:%M", localtime(&avn.issueTime));
+            char dueTimeStr[20];
+            strftime(dueTimeStr, sizeof(dueTimeStr), "%Y-%m-%d %H:%M", localtime(&avn.dueDate));
+            cout << "\nAVN Details:\n";
+            cout << "AVN ID: " << avn.avnID << "\n";
+            cout << "Flight Number: " << avn.flightNumber << "\n";
+            cout << "Airline: " << avn.airlineName << "\n";
+            cout << "Aircraft Type: " << getAircraftTypeName(avn.aircraftType) << "\n";
+            cout << "Speed Recorded: " << fixed << setprecision(2) << avn.speedRecorded << " km/h (" << avn.speedPermissible << ")\n";
+            cout << "Altitude Recorded: " << fixed << setprecision(2) << avn.altitudeRecorded << " ft (" << avn.altitudePermissible << ")\n";
+            cout << "Fine Amount: PKR " << fixed << setprecision(2) << avn.fineAmount << "\n";
+            cout << "Payment Status: " << status << "\n";
+            cout << "Issue Time: " << issueTimeStr << "\n";
+            cout << "Due Time: " << dueTimeStr << "\n";
+            break;
+        }
+    }
+
+    if (!found) {
+        cout << "AVN ID " << avnID << " not found for " << airlineName << ".\n";
+    }
+    cout << "Press Enter to continue...";
+    clearInputBuffer();
+    cin.get();
+}
+
+void initiatePayment(const string& airlineName) {
+    //lock_guard<mutex> guard(coutMutex);
+    string avnID;
+    cout << "\n=== Initiate Payment ===\n";
+    while (true) {
+        cout << "Enter AVN ID for payment (e.g., AVN-20250507-001): ";
+        getline(cin, avnID);
+        regex avnRegex("AVN-\\d{8}-\\d{3}");
+        if (regex_match(avnID, avnRegex)) {
+            break;
+        }
+        cout << "Invalid AVN ID format. Use AVN-YYYYMMDD-NNN. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
+
+    //lock_guard<mutex> avnGuard(avnListMutex);
+    for (const auto& avn : avnList) {
+        if (avn.airlineName == airlineName && avn.avnID == avnID) {
+            if (avn.paymentStatus == "paid") {
+                cout << "AVN " << avnID << " is already paid.\n";
+            }
+            else {
+                mockStripePay(avn);
+                return;
+            }
+        }
+    }
+    cout << "AVN ID " << avnID << " not found or not associated with " << airlineName << ".\n";
+    cout << "Press Enter to continue...";
+    clearInputBuffer();
+    cin.get();
+}
+
+void mockStripePay(const AVN& avn) {
+    //lock_guard<mutex> guard(coutMutex);
+    cout << "\n=== StripePay Payment Process ===\n";
+    cout << "AVN ID: " << avn.avnID << "\n";
+    cout << "Flight Number: " << avn.flightNumber << "\n";
+    cout << "Airline: " << avn.airlineName << "\n";
+    cout << "Fine Amount: PKR " << fixed << setprecision(2) << avn.fineAmount << "\n";
+
+    string cardNumber, expiry, cvv, amountStr;
+    int amount;
+
+    // Dummy card number
+    while (true) {
+        cout << "Enter Card Number (16 digits): ";
+        getline(cin, cardNumber);
+        regex cardRegex("\\d{16}");
+        if (regex_match(cardNumber, cardRegex)) {
+            break;
+        }
+        cout << "Invalid card number. Must be 16 digits. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
+
+    // Dummy expiry
+    while (true) {
+        cout << "Enter Expiry (MM/YY): ";
+        getline(cin, expiry);
+        regex expiryRegex("\\d{2}/\\d{2}");
+        if (regex_match(expiry, expiryRegex)) {
+            break;
+        }
+        cout << "Invalid expiry format. Use MM/YY. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
+
+    // Dummy CVV
+    while (true) {
+        cout << "Enter CVV (3 digits): ";
+        getline(cin, cvv);
+        regex cvvRegex("\\d{3}");
+        if (regex_match(cvv, cvvRegex)) {
+            break;
+        }
+        cout << "Invalid CVV. Must be 3 digits. Press Enter to continue...\n";
+        clearInputBuffer();
+    }
+
+    // Amount validation
+    while (true) {
+        cout << "Enter Amount to Pay (PKR): ";
+        getline(cin, amountStr);
+        try {
+            amount = stoi(amountStr);
+            if (amount == avn.fineAmount) {
+                break;
+            }
+            cout << "Amount must match fine: PKR " << avn.fineAmount << "\nYou entered: " << amount << "\nPress Enter to continue...\n";
+        }
+        catch (...) {
+            cout << "Invalid amount. Enter a valid number. Press Enter to continue...\n";
+        }
+        clearInputBuffer();
+    }
+
+    // Simulate payment processing
+    cout << "Processing payment...\n";
+    this_thread::sleep_for(chrono::seconds(2));
+    string confirmationID = "STRIPE-" + to_string(rand() % 1000000);
+    cout << "Payment successful! Confirmation ID: " << confirmationID << "\n";
+
+    // Update payment status
+    updateAVNPaymentStatus(avn.avnID);
+    cout << "AVN status updated to 'paid'. Press Enter to continue...\n";
+    clearInputBuffer();
+    cin.get();
 }
 
 void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAircrafts, int& aircraftSequence) {
+    //lock_guard<mutex> guard(coutMutex);
     cout << "\n=== Spawn Custom Aircraft ===\n";
 
     // Display available airlines
@@ -563,6 +960,7 @@ void spawnCustomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAir
 }
 
 void spawnRandomAircraft(vector<Airline>& airlines, vector<Aircraft*>& activeAircrafts, int& aircraftSequence) {
+    //lock_guard<mutex> guard(coutMutex);
     cout << "\n=== Spawn Random Aircraft ===\n";
 
     // Randomly select direction
@@ -595,6 +993,7 @@ void runSimulation(vector<Airline>& airlines, vector<Runway>& runways, vector<Ai
     if (simulationRunning) {
         simulationRunning = false;
         simulationPaused = true;
+        lock_guard<mutex> coutGuard(coutMutex);
         cout << "\nSimulation completed.\n";
         displayAVNStatistics(airlines);
     }
@@ -843,6 +1242,7 @@ Aircraft* createAircraftForAutoEntry(const vector<Airline>& airlines, Direction 
         arrivalQueue.push(aircraft);
         // Rebuild queue if priority is HIGH_PRIORITY due to low fuel
         if (aircraft->fuelStatus < 30 && aircraft->priority == HIGH_PRIORITY) {
+            lock_guard<mutex> guard(coutMutex);
             cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to low fuel.\n";
             rebuildQueue(aircraft, arrivalQueue);
         }
@@ -853,6 +1253,7 @@ Aircraft* createAircraftForAutoEntry(const vector<Airline>& airlines, Direction 
         departureQueue.push(aircraft);
         // Rebuild queue if priority is HIGH_PRIORITY due to low fuel
         if (aircraft->fuelStatus < 30 && aircraft->priority == HIGH_PRIORITY) {
+            lock_guard<mutex> guard(coutMutex);
             cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to low fuel.\n";
             rebuildQueue(aircraft, departureQueue);
         }
@@ -1107,6 +1508,7 @@ void updateWaitTimes(vector<Runway>& runways) {
             // Aging: Upgrade NORMAL_PRIORITY to HIGH_PRIORITY after AGING_THRESHOLD
             if (aircraft->actualWaitTime >= AGING_THRESHOLD && aircraft->priority == NORMAL_PRIORITY) {
                 aircraft->priority = HIGH_PRIORITY;
+                lock_guard<mutex> guard(coutMutex);
                 cout << "Flight " << aircraft->flightNumber << " upgraded to HIGH_PRIORITY due to aging.\n";
                 // Rebuild queue
                 priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority>& queue = (aircraft->direction == NORTH || aircraft->direction == SOUTH) ? arrivalQueue : departureQueue;
@@ -1365,7 +1767,10 @@ void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation
     struct tm* tm = localtime(&now);
     char dateStr[11];
     strftime(dateStr, sizeof(dateStr), "%Y%m%d", tm);
-    avn.avnID = "AVN-" + string(dateStr) + "-" + to_string(++avnSequence);
+    // Pad avnSequence to three digits
+    ostringstream seqStream;
+    seqStream << setw(3) << setfill('0') << ++avnSequence;
+    avn.avnID = "AVN-" + string(dateStr) + "-" + seqStream.str();
     avn.flightNumber = aircraft.flightNumber;
     avn.airlineName = aircraft.airline->name;
     avn.aircraftType = aircraft.type;
@@ -1378,7 +1783,7 @@ void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation
     avn.fineAmount = baseFine * (1.0 + SERVICE_FEE);
     switch (aircraft.phase) {
         case HOLDING:
-            avn.speedPermissible = "≤600";
+            avn.speedPermissible = "<=600";
             avn.altitudePermissible = "9000-20000";
             break;
         case APPROACH:
@@ -1386,23 +1791,23 @@ void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation
             avn.altitudePermissible = "3000-10250";
             break;
         case LANDING:
-            avn.speedPermissible = "≤240";
+            avn.speedPermissible = "<=240";
             avn.altitudePermissible = "0-3100";
             break;
         case TAXI:
-            avn.speedPermissible = "≤30";
+            avn.speedPermissible = "<=30";
             avn.altitudePermissible = "0";
             break;
         case AT_GATE:
-            avn.speedPermissible = "≤10";
+            avn.speedPermissible = "<=10";
             avn.altitudePermissible = "0";
             break;
         case TAKEOFF_ROLL:
-            avn.speedPermissible = "≤290";
+            avn.speedPermissible = "<=290";
             avn.altitudePermissible = "0-1000";
             break;
         case CLIMB:
-            avn.speedPermissible = "≤463";
+            avn.speedPermissible = "<=463";
             avn.altitudePermissible = "900-20000";
             break;
         case ACCELERATING_TO_CRUISE:
@@ -1418,7 +1823,10 @@ void generateAVN(Aircraft& aircraft, bool speedViolation, bool altitudeViolation
             avn.altitudePermissible = "N/A";
             break;
     }
-    avnList.push_back(avn);
+    {
+        lock_guard<mutex> avnGuard(avnListMutex);
+        avnList.push_back(avn);
+    }
     lock_guard<mutex> guard(coutMutex);
     cout << "AVN GENERATED: ID=" << avn.avnID
          << ", Flight=" << avn.flightNumber
@@ -1446,6 +1854,14 @@ void updateAVNPaymentStatus(const string& avnID) {
     for (auto& avn : avnList) {
         if (avn.avnID == avnID) {
             avn.paymentStatus = "paid";
+
+            // set aircraft's hasAVN to false
+            auto it = aircraftStatusMap.find(avn.flightNumber);
+            if (it != aircraftStatusMap.end()) {
+                Aircraft* aircraft = it->second;
+                aircraft->hasAVN = false;
+            }
+            // Notify ATC Controller and Airline Portal
             cout << "PAYMENT CONFIRMED: AVN ID=" << avnID
                  << ", Flight=" << avn.flightNumber
                  << ", Airline=" << avn.airlineName
@@ -1454,7 +1870,7 @@ void updateAVNPaymentStatus(const string& avnID) {
             cout << "Notified ATC Controller and Airline Portal.\n";
             return;
         }
-    }
+    }    
     cout << "ERROR: AVN ID=" << avnID << " not found for payment update.\n";
 }
 
@@ -1701,45 +2117,48 @@ void removeAircraftFromEverywhere(Aircraft* aircraft, vector<Aircraft*>& aircraf
         aircrafts.erase(it);
     }
 
+    // Remove from runways
     for (auto& runway : runways) {
         if (runway.currentAircraft == aircraft) {
             runway.isOccupied = false;
             runway.currentAircraft = nullptr;
-        } else {
-            queue<Aircraft*> tempQueue;
-            while (!runway.waitingQueue.empty()) {
-                Aircraft* queuedAircraft = runway.waitingQueue.front();
-                runway.waitingQueue.pop();
-                if (queuedAircraft != aircraft) {
-                    tempQueue.push(queuedAircraft);
-                }
-            }
-            runway.waitingQueue = tempQueue;
         }
+        queue<Aircraft*> tempQueue;
+        while (!runway.waitingQueue.empty()) {
+            Aircraft* queuedAircraft = runway.waitingQueue.front();
+            runway.waitingQueue.pop();
+            if (queuedAircraft != aircraft) {
+                tempQueue.push(queuedAircraft);
+            }
+        }
+        runway.waitingQueue = tempQueue;
     }
 
+    // Remove from status map
     aircraftStatusMap.erase(aircraft->flightNumber);
 
-    if (aircraft->direction == NORTH || aircraft->direction == SOUTH) {
-        priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempQueue;
-        while (!arrivalQueue.empty()) {
-            Aircraft* queuedAircraft = arrivalQueue.top();
-            arrivalQueue.pop();
-            if (queuedAircraft != aircraft)
-                tempQueue.push(queuedAircraft);
+    // Remove from priority queues
+    priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempArrivalQueue;
+    while (!arrivalQueue.empty()) {
+        Aircraft* queuedAircraft = arrivalQueue.top();
+        arrivalQueue.pop();
+        if (queuedAircraft != aircraft) {
+            tempArrivalQueue.push(queuedAircraft);
         }
-        arrivalQueue = tempQueue;
-    } else {
-        priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempQueue;
-        while (!departureQueue.empty()) {
-            Aircraft* queuedAircraft = departureQueue.top();
-            departureQueue.pop();
-            if (queuedAircraft != aircraft)
-                tempQueue.push(queuedAircraft);
-        }
-        departureQueue = tempQueue;
     }
+    arrivalQueue = tempArrivalQueue;
 
+    priority_queue<Aircraft*, vector<Aircraft*>, ComparePriority> tempDepartureQueue;
+    while (!departureQueue.empty()) {
+        Aircraft* queuedAircraft = departureQueue.top();
+        departureQueue.pop();
+        if (queuedAircraft != aircraft) {
+            tempDepartureQueue.push(queuedAircraft);
+        }
+    }
+    departureQueue = tempDepartureQueue;
+
+    // Delete the aircraft
     delete aircraft;
 }
 
